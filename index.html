@@ -4434,16 +4434,21 @@ function getAudio() {
   return audioCtx;
 }
 
-function playHitSound(strength) {
-  var ctx = getAudio(); if (!ctx) return;
+function makeOscGain(ctx) {
   var osc = ctx.createOscillator();
   var gain = ctx.createGain();
   osc.connect(gain); gain.connect(ctx.destination);
-  osc.frequency.value = 400 + strength * 15;
-  osc.type = 'triangle';
-  gain.gain.setValueAtTime(Math.min(strength / 50, 0.3) * VOLUME_SCALE, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
-  osc.start(); osc.stop(ctx.currentTime + 0.15);
+  return { osc: osc, gain: gain };
+}
+
+function playHitSound(strength) {
+  var ctx = getAudio(); if (!ctx) return;
+  var n = makeOscGain(ctx);
+  n.osc.frequency.value = 400 + strength * 15;
+  n.osc.type = 'triangle';
+  n.gain.gain.setValueAtTime(Math.min(strength / 50, 0.3) * VOLUME_SCALE, ctx.currentTime);
+  n.gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+  n.osc.start(); n.osc.stop(ctx.currentTime + 0.15);
   // Bass thump for hard hits
   if (strength > 20) {
     var bass = ctx.createOscillator();
@@ -4496,55 +4501,47 @@ function stopBoostSound() {
 function playGoalHorn() {
   var ctx = getAudio(); if (!ctx) return;
   [220, 277, 330].forEach(function(freq, i) {
-    var osc = ctx.createOscillator();
-    var gain = ctx.createGain();
-    osc.connect(gain); gain.connect(ctx.destination);
-    osc.frequency.value = freq;
-    osc.type = 'sawtooth';
-    gain.gain.setValueAtTime(0.15 * VOLUME_SCALE, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.5);
-    osc.start(ctx.currentTime + i * 0.05);
-    osc.stop(ctx.currentTime + 1.5);
+    var n = makeOscGain(ctx);
+    n.osc.frequency.value = freq;
+    n.osc.type = 'sawtooth';
+    n.gain.gain.setValueAtTime(0.15 * VOLUME_SCALE, ctx.currentTime);
+    n.gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.5);
+    n.osc.start(ctx.currentTime + i * 0.05);
+    n.osc.stop(ctx.currentTime + 1.5);
   });
 }
 
 function playJumpSound() {
   var ctx = getAudio(); if (!ctx) return;
-  var osc = ctx.createOscillator();
-  var gain = ctx.createGain();
-  osc.connect(gain); gain.connect(ctx.destination);
-  osc.type = 'sine';
-  osc.frequency.setValueAtTime(200, ctx.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(600, ctx.currentTime + 0.12);
-  gain.gain.setValueAtTime(0.12 * VOLUME_SCALE, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
-  osc.start(); osc.stop(ctx.currentTime + 0.15);
+  var n = makeOscGain(ctx);
+  n.osc.type = 'sine';
+  n.osc.frequency.setValueAtTime(200, ctx.currentTime);
+  n.osc.frequency.exponentialRampToValueAtTime(600, ctx.currentTime + 0.12);
+  n.gain.gain.setValueAtTime(0.12 * VOLUME_SCALE, ctx.currentTime);
+  n.gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+  n.osc.start(); n.osc.stop(ctx.currentTime + 0.15);
 }
 
 function playDodgeSound() {
   var ctx = getAudio(); if (!ctx) return;
-  var osc = ctx.createOscillator();
-  var gain = ctx.createGain();
-  osc.connect(gain); gain.connect(ctx.destination);
-  osc.type = 'sawtooth';
-  osc.frequency.setValueAtTime(300, ctx.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(800, ctx.currentTime + 0.08);
-  osc.frequency.exponentialRampToValueAtTime(200, ctx.currentTime + 0.2);
-  gain.gain.setValueAtTime(0.15 * VOLUME_SCALE, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
-  osc.start(); osc.stop(ctx.currentTime + 0.2);
+  var n = makeOscGain(ctx);
+  n.osc.type = 'sawtooth';
+  n.osc.frequency.setValueAtTime(300, ctx.currentTime);
+  n.osc.frequency.exponentialRampToValueAtTime(800, ctx.currentTime + 0.08);
+  n.osc.frequency.exponentialRampToValueAtTime(200, ctx.currentTime + 0.2);
+  n.gain.gain.setValueAtTime(0.15 * VOLUME_SCALE, ctx.currentTime);
+  n.gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+  n.osc.start(); n.osc.stop(ctx.currentTime + 0.2);
 }
 
 function playCountdownBeep(high) {
   var ctx = getAudio(); if (!ctx) return;
-  var osc = ctx.createOscillator();
-  var gain = ctx.createGain();
-  osc.connect(gain); gain.connect(ctx.destination);
-  osc.frequency.value = high ? 880 : 440;
-  osc.type = 'sine';
-  gain.gain.setValueAtTime(0.2 * VOLUME_SCALE, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
-  osc.start(); osc.stop(ctx.currentTime + 0.3);
+  var n = makeOscGain(ctx);
+  n.osc.frequency.value = high ? 880 : 440;
+  n.osc.type = 'sine';
+  n.gain.gain.setValueAtTime(0.2 * VOLUME_SCALE, ctx.currentTime);
+  n.gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+  n.osc.start(); n.osc.stop(ctx.currentTime + 0.3);
 }
 
 // ==========================================================================
