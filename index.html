@@ -4434,16 +4434,21 @@ function getAudio() {
   return audioCtx;
 }
 
-function playHitSound(strength) {
-  var ctx = getAudio(); if (!ctx) return;
+function makeOscGain(ctx) {
   var osc = ctx.createOscillator();
   var gain = ctx.createGain();
   osc.connect(gain); gain.connect(ctx.destination);
-  osc.frequency.value = 400 + strength * 15;
-  osc.type = 'triangle';
-  gain.gain.setValueAtTime(Math.min(strength / 50, 0.3) * VOLUME_SCALE, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
-  osc.start(); osc.stop(ctx.currentTime + 0.15);
+  return { osc: osc, gain: gain };
+}
+
+function playHitSound(strength) {
+  var ctx = getAudio(); if (!ctx) return;
+  var n = makeOscGain(ctx);
+  n.osc.frequency.value = 400 + strength * 15;
+  n.osc.type = 'triangle';
+  n.gain.gain.setValueAtTime(Math.min(strength / 50, 0.3) * VOLUME_SCALE, ctx.currentTime);
+  n.gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+  n.osc.start(); n.osc.stop(ctx.currentTime + 0.15);
   // Bass thump for hard hits
   if (strength > 20) {
     var bass = ctx.createOscillator();
@@ -4496,55 +4501,47 @@ function stopBoostSound() {
 function playGoalHorn() {
   var ctx = getAudio(); if (!ctx) return;
   [220, 277, 330].forEach(function(freq, i) {
-    var osc = ctx.createOscillator();
-    var gain = ctx.createGain();
-    osc.connect(gain); gain.connect(ctx.destination);
-    osc.frequency.value = freq;
-    osc.type = 'sawtooth';
-    gain.gain.setValueAtTime(0.15 * VOLUME_SCALE, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.5);
-    osc.start(ctx.currentTime + i * 0.05);
-    osc.stop(ctx.currentTime + 1.5);
+    var n = makeOscGain(ctx);
+    n.osc.frequency.value = freq;
+    n.osc.type = 'sawtooth';
+    n.gain.gain.setValueAtTime(0.15 * VOLUME_SCALE, ctx.currentTime);
+    n.gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.5);
+    n.osc.start(ctx.currentTime + i * 0.05);
+    n.osc.stop(ctx.currentTime + 1.5);
   });
 }
 
 function playJumpSound() {
   var ctx = getAudio(); if (!ctx) return;
-  var osc = ctx.createOscillator();
-  var gain = ctx.createGain();
-  osc.connect(gain); gain.connect(ctx.destination);
-  osc.type = 'sine';
-  osc.frequency.setValueAtTime(200, ctx.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(600, ctx.currentTime + 0.12);
-  gain.gain.setValueAtTime(0.12 * VOLUME_SCALE, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
-  osc.start(); osc.stop(ctx.currentTime + 0.15);
+  var n = makeOscGain(ctx);
+  n.osc.type = 'sine';
+  n.osc.frequency.setValueAtTime(200, ctx.currentTime);
+  n.osc.frequency.exponentialRampToValueAtTime(600, ctx.currentTime + 0.12);
+  n.gain.gain.setValueAtTime(0.12 * VOLUME_SCALE, ctx.currentTime);
+  n.gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+  n.osc.start(); n.osc.stop(ctx.currentTime + 0.15);
 }
 
 function playDodgeSound() {
   var ctx = getAudio(); if (!ctx) return;
-  var osc = ctx.createOscillator();
-  var gain = ctx.createGain();
-  osc.connect(gain); gain.connect(ctx.destination);
-  osc.type = 'sawtooth';
-  osc.frequency.setValueAtTime(300, ctx.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(800, ctx.currentTime + 0.08);
-  osc.frequency.exponentialRampToValueAtTime(200, ctx.currentTime + 0.2);
-  gain.gain.setValueAtTime(0.15 * VOLUME_SCALE, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
-  osc.start(); osc.stop(ctx.currentTime + 0.2);
+  var n = makeOscGain(ctx);
+  n.osc.type = 'sawtooth';
+  n.osc.frequency.setValueAtTime(300, ctx.currentTime);
+  n.osc.frequency.exponentialRampToValueAtTime(800, ctx.currentTime + 0.08);
+  n.osc.frequency.exponentialRampToValueAtTime(200, ctx.currentTime + 0.2);
+  n.gain.gain.setValueAtTime(0.15 * VOLUME_SCALE, ctx.currentTime);
+  n.gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+  n.osc.start(); n.osc.stop(ctx.currentTime + 0.2);
 }
 
 function playCountdownBeep(high) {
   var ctx = getAudio(); if (!ctx) return;
-  var osc = ctx.createOscillator();
-  var gain = ctx.createGain();
-  osc.connect(gain); gain.connect(ctx.destination);
-  osc.frequency.value = high ? 880 : 440;
-  osc.type = 'sine';
-  gain.gain.setValueAtTime(0.2 * VOLUME_SCALE, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
-  osc.start(); osc.stop(ctx.currentTime + 0.3);
+  var n = makeOscGain(ctx);
+  n.osc.frequency.value = high ? 880 : 440;
+  n.osc.type = 'sine';
+  n.gain.gain.setValueAtTime(0.2 * VOLUME_SCALE, ctx.currentTime);
+  n.gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+  n.osc.start(); n.osc.stop(ctx.currentTime + 0.3);
 }
 
 // ==========================================================================
@@ -7055,7 +7052,7 @@ function updateBall(dt) {
   var inCornerZoneX = bP.x < -FW/2 + cR || bP.x > FW/2 - cR;
   var hasGroundGoals = !hoopsActive && !dropshotActive;
   // Player's end (z = FL/2)
-  if (bP.z >= FL / 2 - BR_ACTIVE && !inCornerZoneX) {
+  if (bP.z >= FL / 2 - BR_ACTIVE && !inCornerZoneX && (bP.y > CURVE_R || !curveHandled)) {
     if (hasGroundGoals && Math.abs(bP.x) < GW / 2 && bP.y < GH) {
       // In goal opening — allow through
       if (bP.z >= FL / 2 + GD - BR_ACTIVE) {
@@ -7084,7 +7081,7 @@ function updateBall(dt) {
   }
 
   // AI's end (z = -FL/2)
-  if (bP.z <= -FL / 2 + BR_ACTIVE && !inCornerZoneX) {
+  if (bP.z <= -FL / 2 + BR_ACTIVE && !inCornerZoneX && (bP.y > CURVE_R || !curveHandled)) {
     if (hasGroundGoals && Math.abs(bP.x) < GW / 2 && bP.y < GH) {
       if (bP.z <= -FL / 2 - GD + BR_ACTIVE) {
         bP.z = -FL / 2 - GD + BR_ACTIVE;
@@ -7166,6 +7163,7 @@ function clampCar(pos, vel) {
   var hl = CL / 2 + 0.2;
 
   // Check curved ramp collisions first
+  var curveAdjusted = false;
   var curve = getCurveInfo(pos.x, pos.y, pos.z, 0);
   if (curve && curve.onCurve && curve.dist < curve.radius + hw) {
     // Push fully out along curve normal (prevents getting stuck on ramps)
@@ -7174,6 +7172,7 @@ function clampCar(pos, vel) {
       pos.addScaledVector(curve.normal, pen + 0.05);
       var dot = vel.dot(curve.normal);
       if (dot < 0) vel.addScaledVector(curve.normal, -dot);
+      curveAdjusted = true;
     }
   }
 
@@ -7206,26 +7205,26 @@ function clampCar(pos, vel) {
   var inCornerZoneZ = pos.z < -FL/2 + CORNER_R || pos.z > FL/2 - CORNER_R;
   var inCornerZoneX = pos.x < -FW/2 + CORNER_R || pos.x > FW/2 - CORNER_R;
 
-  // Side walls (flat section) — skip in corner zones where arc collision handles it
-  if (pos.x < -FW / 2 + hw && !inCornerZoneZ) { pos.x = -FW / 2 + hw; if (vel.x < 0) vel.x = 0; }
-  if (pos.x > FW / 2 - hw && !inCornerZoneZ) { pos.x = FW / 2 - hw; if (vel.x > 0) vel.x = 0; }
+  // Side walls (flat section) — skip in corner zones and when curve already handled boundary
+  if (pos.x < -FW / 2 + hw && !inCornerZoneZ && !curveAdjusted) { pos.x = -FW / 2 + hw; if (vel.x < 0) vel.x = 0; }
+  if (pos.x > FW / 2 - hw && !inCornerZoneZ && !curveAdjusted) { pos.x = FW / 2 - hw; if (vel.x > 0) vel.x = 0; }
   // End walls (allow into goal opening, unless hoops/dropshot mode — solid walls)
-  if (pos.z > FL / 2 - hl && !inCornerZoneX) {
+  if (pos.z > FL / 2 - hl && !inCornerZoneX && !curveAdjusted) {
     if (hoopsActive || dropshotActive || Math.abs(pos.x) >= GW / 2 - hw || pos.y > GH) {
       pos.z = FL / 2 - hl; if (vel.z > 0) vel.z = 0;
     } else if (pos.z > FL / 2 + GD - hl) {
       pos.z = FL / 2 + GD - hl; if (vel.z > 0) vel.z = 0;
     }
   }
-  if (pos.z < -FL / 2 + hl && !inCornerZoneX) {
+  if (pos.z < -FL / 2 + hl && !inCornerZoneX && !curveAdjusted) {
     if (hoopsActive || dropshotActive || Math.abs(pos.x) >= GW / 2 - hw || pos.y > GH) {
       pos.z = -FL / 2 + hl; if (vel.z < 0) vel.z = 0;
     } else if (pos.z < -FL / 2 - GD + hl) {
       pos.z = -FL / 2 - GD + hl; if (vel.z < 0) vel.z = 0;
     }
   }
-  // Ceiling
-  if (pos.y > WH - CH / 2) { pos.y = WH - CH / 2; if (vel.y > 0) vel.y = 0; }
+  // Ceiling — skip when curve already handled the wall-ceiling transition
+  if (pos.y > WH - CH / 2 && !curveAdjusted) { pos.y = WH - CH / 2; if (vel.y > 0) vel.y = 0; }
 }
 
 // ==========================================================================
