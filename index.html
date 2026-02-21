@@ -7052,7 +7052,7 @@ function updateBall(dt) {
   var inCornerZoneX = bP.x < -FW/2 + cR || bP.x > FW/2 - cR;
   var hasGroundGoals = !hoopsActive && !dropshotActive;
   // Player's end (z = FL/2)
-  if (bP.z >= FL / 2 - BR_ACTIVE && !inCornerZoneX) {
+  if (bP.z >= FL / 2 - BR_ACTIVE && !inCornerZoneX && (bP.y > CURVE_R || !curveHandled)) {
     if (hasGroundGoals && Math.abs(bP.x) < GW / 2 && bP.y < GH) {
       // In goal opening — allow through
       if (bP.z >= FL / 2 + GD - BR_ACTIVE) {
@@ -7081,7 +7081,7 @@ function updateBall(dt) {
   }
 
   // AI's end (z = -FL/2)
-  if (bP.z <= -FL / 2 + BR_ACTIVE && !inCornerZoneX) {
+  if (bP.z <= -FL / 2 + BR_ACTIVE && !inCornerZoneX && (bP.y > CURVE_R || !curveHandled)) {
     if (hasGroundGoals && Math.abs(bP.x) < GW / 2 && bP.y < GH) {
       if (bP.z <= -FL / 2 - GD + BR_ACTIVE) {
         bP.z = -FL / 2 - GD + BR_ACTIVE;
@@ -7163,6 +7163,7 @@ function clampCar(pos, vel) {
   var hl = CL / 2 + 0.2;
 
   // Check curved ramp collisions first
+  var curveAdjusted = false;
   var curve = getCurveInfo(pos.x, pos.y, pos.z, 0);
   if (curve && curve.onCurve && curve.dist < curve.radius + hw) {
     // Push fully out along curve normal (prevents getting stuck on ramps)
@@ -7171,6 +7172,7 @@ function clampCar(pos, vel) {
       pos.addScaledVector(curve.normal, pen + 0.05);
       var dot = vel.dot(curve.normal);
       if (dot < 0) vel.addScaledVector(curve.normal, -dot);
+      curveAdjusted = true;
     }
   }
 
@@ -7203,26 +7205,26 @@ function clampCar(pos, vel) {
   var inCornerZoneZ = pos.z < -FL/2 + CORNER_R || pos.z > FL/2 - CORNER_R;
   var inCornerZoneX = pos.x < -FW/2 + CORNER_R || pos.x > FW/2 - CORNER_R;
 
-  // Side walls (flat section) — skip in corner zones where arc collision handles it
-  if (pos.x < -FW / 2 + hw && !inCornerZoneZ) { pos.x = -FW / 2 + hw; if (vel.x < 0) vel.x = 0; }
-  if (pos.x > FW / 2 - hw && !inCornerZoneZ) { pos.x = FW / 2 - hw; if (vel.x > 0) vel.x = 0; }
+  // Side walls (flat section) — skip in corner zones and when curve already handled boundary
+  if (pos.x < -FW / 2 + hw && !inCornerZoneZ && !curveAdjusted) { pos.x = -FW / 2 + hw; if (vel.x < 0) vel.x = 0; }
+  if (pos.x > FW / 2 - hw && !inCornerZoneZ && !curveAdjusted) { pos.x = FW / 2 - hw; if (vel.x > 0) vel.x = 0; }
   // End walls (allow into goal opening, unless hoops/dropshot mode — solid walls)
-  if (pos.z > FL / 2 - hl && !inCornerZoneX) {
+  if (pos.z > FL / 2 - hl && !inCornerZoneX && !curveAdjusted) {
     if (hoopsActive || dropshotActive || Math.abs(pos.x) >= GW / 2 - hw || pos.y > GH) {
       pos.z = FL / 2 - hl; if (vel.z > 0) vel.z = 0;
     } else if (pos.z > FL / 2 + GD - hl) {
       pos.z = FL / 2 + GD - hl; if (vel.z > 0) vel.z = 0;
     }
   }
-  if (pos.z < -FL / 2 + hl && !inCornerZoneX) {
+  if (pos.z < -FL / 2 + hl && !inCornerZoneX && !curveAdjusted) {
     if (hoopsActive || dropshotActive || Math.abs(pos.x) >= GW / 2 - hw || pos.y > GH) {
       pos.z = -FL / 2 + hl; if (vel.z < 0) vel.z = 0;
     } else if (pos.z < -FL / 2 - GD + hl) {
       pos.z = -FL / 2 - GD + hl; if (vel.z < 0) vel.z = 0;
     }
   }
-  // Ceiling
-  if (pos.y > WH - CH / 2) { pos.y = WH - CH / 2; if (vel.y > 0) vel.y = 0; }
+  // Ceiling — skip when curve already handled the wall-ceiling transition
+  if (pos.y > WH - CH / 2 && !curveAdjusted) { pos.y = WH - CH / 2; if (vel.y > 0) vel.y = 0; }
 }
 
 // ==========================================================================
