@@ -5630,11 +5630,16 @@ function updatePlayer(dt) {
     // On a wall or ceiling — check curves for smooth wall-to-floor transition
     var wallCurve = getCurveInfo(pP.x, pP.y, pP.z, 0);
     if (wallCurve && wallCurve.onCurve && wallCurve.dist < wallCurve.radius + CH / 2 + 1.5) {
-      // Push car onto curve surface
+      // Push car onto curve surface — only if push stays inside arena
       var wallRampPen = wallCurve.radius + CH / 2 - wallCurve.dist;
       if (wallRampPen > -0.5) {
         var pushAmt2 = Math.max(wallRampPen + 0.1, 0.05);
-        pP.addScaledVector(wallCurve.normal, pushAmt2);
+        var wNewX = pP.x + wallCurve.normal.x * pushAmt2;
+        var wNewY = pP.y + wallCurve.normal.y * pushAmt2;
+        var wNewZ = pP.z + wallCurve.normal.z * pushAmt2;
+        if (wNewX > -FW / 2 && wNewX < FW / 2 && wNewY > CH / 2 && wNewY < WH) {
+          pP.set(wNewX, wNewY, wNewZ);
+        }
       }
       var wallRampDot = pV.dot(wallCurve.normal);
       if (wallRampDot < 0) pV.addScaledVector(wallCurve.normal, -wallRampDot);
@@ -7162,21 +7167,7 @@ function clampCar(pos, vel) {
   var hw = CW / 2 + 0.2;
   var hl = CL / 2 + 0.2;
 
-  // Check curved ramp collisions first
-  var curveAdjusted = false;
-  var curve = getCurveInfo(pos.x, pos.y, pos.z, 0);
-  if (curve && curve.onCurve && curve.dist < curve.radius + hw) {
-    // Push fully out along curve normal (prevents getting stuck on ramps)
-    var pen = curve.radius + hw - curve.dist;
-    if (pen > 0) {
-      pos.addScaledVector(curve.normal, pen + 0.05);
-      var dot = vel.dot(curve.normal);
-      if (dot < 0) vel.addScaledVector(curve.normal, -dot);
-      curveAdjusted = true;
-    }
-  }
-
-  // Rounded corner collision for car
+  // Rounded corner collision for car (horizontal XZ corners)
   var cR = CORNER_R;
   var carCorners = [
     { cx: -FW/2 + cR, cz: -FL/2 + cR },
@@ -7205,26 +7196,32 @@ function clampCar(pos, vel) {
   var inCornerZoneZ = pos.z < -FL/2 + CORNER_R || pos.z > FL/2 - CORNER_R;
   var inCornerZoneX = pos.x < -FW/2 + CORNER_R || pos.x > FW/2 - CORNER_R;
 
-  // Side walls (flat section) — skip in corner zones and when curve already handled boundary
-  if (pos.x < -FW / 2 + hw && !inCornerZoneZ && !curveAdjusted) { pos.x = -FW / 2 + hw; if (vel.x < 0) vel.x = 0; }
-  if (pos.x > FW / 2 - hw && !inCornerZoneZ && !curveAdjusted) { pos.x = FW / 2 - hw; if (vel.x > 0) vel.x = 0; }
+  // Vertical curve zone guards — skip flat wall clamps in ramp zones (ramp code handles them).
+  // Mirrors ball physics: ball side-wall clamps use bP.y > CURVE_R to stay out of curve zones.
+  var inFloorCurveZone = pos.y < CURVE_R;
+  var inCeilCurveZone  = pos.y > WH - CURVE_R;
+
+  // Side walls (flat section — above floor curve, below ceiling curve)
+  if (pos.x < -FW / 2 + hw && !inCornerZoneZ && !inFloorCurveZone && !inCeilCurveZone) { pos.x = -FW / 2 + hw; if (vel.x < 0) vel.x = 0; }
+  if (pos.x > FW / 2 - hw && !inCornerZoneZ && !inFloorCurveZone && !inCeilCurveZone) { pos.x = FW / 2 - hw; if (vel.x > 0) vel.x = 0; }
   // End walls (allow into goal opening, unless hoops/dropshot mode — solid walls)
-  if (pos.z > FL / 2 - hl && !inCornerZoneX && !curveAdjusted) {
+  if (pos.z > FL / 2 - hl && !inCornerZoneX && !inFloorCurveZone && !inCeilCurveZone) {
     if (hoopsActive || dropshotActive || Math.abs(pos.x) >= GW / 2 - hw || pos.y > GH) {
       pos.z = FL / 2 - hl; if (vel.z > 0) vel.z = 0;
     } else if (pos.z > FL / 2 + GD - hl) {
       pos.z = FL / 2 + GD - hl; if (vel.z > 0) vel.z = 0;
     }
   }
-  if (pos.z < -FL / 2 + hl && !inCornerZoneX && !curveAdjusted) {
+  if (pos.z < -FL / 2 + hl && !inCornerZoneX && !inFloorCurveZone && !inCeilCurveZone) {
     if (hoopsActive || dropshotActive || Math.abs(pos.x) >= GW / 2 - hw || pos.y > GH) {
       pos.z = -FL / 2 + hl; if (vel.z < 0) vel.z = 0;
     } else if (pos.z < -FL / 2 - GD + hl) {
       pos.z = -FL / 2 - GD + hl; if (vel.z < 0) vel.z = 0;
     }
   }
-  // Ceiling — skip when curve already handled the wall-ceiling transition
-  if (pos.y > WH - CH / 2 && !curveAdjusted) { pos.y = WH - CH / 2; if (vel.y > 0) vel.y = 0; }
+  // Ceiling — skip when car is in a wall-ceiling curve zone (wall physics handles transition)
+  var inCeilingCurveZone = inCeilCurveZone && (Math.abs(pos.x) > FW / 2 - CURVE_R || Math.abs(pos.z) > FL / 2 - CURVE_R);
+  if (pos.y > WH - CH / 2 && !inCeilingCurveZone) { pos.y = WH - CH / 2; if (vel.y > 0) vel.y = 0; }
 }
 
 // ==========================================================================
