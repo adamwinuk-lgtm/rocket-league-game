@@ -1,0 +1,15 @@
+{
+  "name": "rocket-arena-uat",
+  "version": "1.0.0",
+  "description": "UAT test suite for Rocket Arena game",
+  "scripts": {
+    "test": "playwright test",
+    "test:report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1"
+  },
+  "dependencies": {
+    "three": "^0.160.0"
+  }
+}
