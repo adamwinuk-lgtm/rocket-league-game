@@ -44,6 +44,11 @@ canvas { display: block; }
   border: 4px solid rgba(255,255,255,0.15);
   position: relative; display: flex; align-items: center; justify-content: center;
 }
+@property --pct {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 100%;
+}
 #boost-fill {
   width: 64px; height: 64px; border-radius: 50%;
   background: conic-gradient(#ff7b00 0%, #ff7b00 var(--pct, 100%), transparent var(--pct, 100%));
@@ -900,14 +905,16 @@ body.shake canvas { animation: screenShake 0.15s ease-out; }
 // ==========================================================================
 var FW = 96, FL = 120, WH = 24;       // field width, length, wall height (RL: 8192x10240x2044 uu)
 var GW = 21, GH = 8, GD = 10;         // goal width, height, depth (RL: 1786x643x880 uu)
-var CURVE_R = 5;                       // radius of curved ramps at floor-wall and wall-ceiling junctions
-var CORNER_R = 8;                      // radius of rounded corners where side walls meet end walls
+var CURVE_R = 5;                       // radius of curved ramps at floor-wall and wall-ceiling junctions (fixed — not per-stadium; both geometry and physics read this same constant so they stay consistent)
+var CORNER_R = 8;                      // radius of rounded corners where side walls meet end walls (per-stadium — updated by applyStadium() from STADIUMS[].cornerR)
 var BR = 1.5;                          // ball radius (RL: 91.25 uu ≈ 1.07 at scale, compromise for visibility)
 var CW = 2.8, CH = 0.9, CL = 4.0;    // car width, height, length (RL: 84x36x118 uu, scaled up for visibility)
 var GRAV = -30;                        // less gravity = more floaty like RL
 var BALL_BOUNCE = 0.7, BALL_FRIC = 0.988, BALL_DRAG = 0.9994;
 var CAR_ACCEL = 34, CAR_BRAKE = 36, CAR_MAX = 40, CAR_THROTTLE_MAX = 37, CAR_BOOST_MAX = 60;
 var CAR_TURN = 2.6, CAR_FRIC = 0.978, CAR_AIR_FRIC = 0.998;
+var AIR_PITCH_ACC = 12.46, AIR_YAW_ACC = 9.11, AIR_ROLL_ACC = 38.34; // aerial angular accel (rad/s²)
+var AIR_ANG_MAX = 5.5, AIR_DAMP = 15, AIR_ROLL_DAMP = 14;            // max ang vel + damping (rad/s²)
 var JUMP_V = 17, DODGE_V = 23;
 var BOOST_MAX = 100, BOOST_USE = 30;   // slightly less boost consumption
 var GAME_DURATION = 300;
@@ -920,7 +927,7 @@ var settings = {
   duration: 300, winScore: 0, ai: 0, teams: '1v1', stadium: 'standard', gameMode: 'standard',
   ballSpeed: 1, gravity: 1, ballSize: 1, boost: 1,
   carSpeed: 1, bounce: 0.65, carColor: '#ff6600',
-  volume: 80, fov: 100, camDist: 18, camHeight: 9, camAngle: -3, camStiffness: 0.5, camSwivel: 5, camTransition: 1.2,
+  volume: 80, fov: 110, camDist: 18, camHeight: 9, camAngle: -3, camStiffness: 0.5, camSwivel: 5, camTransition: 1.2,
   deadzone: 0.12, steeringSensitivity: 1.0, vibration: true,
   controls: {
     forward: 'w', backward: 's', left: 'a', right: 'd',
@@ -999,11 +1006,12 @@ function getAnalogSteer() {
   if (!gamepad.connected) return 0;
   var raw = gamepad.leftStickX;
   if (raw === 0) return 0;
-  // Apply smooth response curve: inner zone more precise, outer zone full speed
-  // Square the magnitude for finer control at small deflections
+  var dz = settings.deadzone || 0.12;
   var sign = raw > 0 ? -1 : 1; // invert: stick right = steer right (decrease pRot)
-  var mag = Math.abs(raw);
-  mag = mag * mag; // quadratic response curve
+  // Re-normalize to [0,1] over usable range after deadzone, then apply quadratic curve
+  var mag = (Math.abs(raw) - dz) / (1 - dz);
+  mag = Math.max(0, Math.min(1, mag));
+  mag = mag * mag;
   return sign * mag;
 }
 function getAnalogThrottle() {
@@ -1044,11 +1052,11 @@ function loadSettings() {
         }
       }
     }
-  } catch(e) {}
+  } catch(e) { console.warn('[RocketArena]', e); }
 }
 
 function saveSettings() {
-  try { localStorage.setItem('rocketArenaSettings', JSON.stringify(settings)); } catch(e) {}
+  try { localStorage.setItem('rocketArenaSettings', JSON.stringify(settings)); } catch(e) { console.warn('[RocketArena]', e); }
 }
 
 function settingsToUI() {
@@ -1204,6 +1212,9 @@ function handleRebindKey(e) {
   _rebindingAction = null;
   _rebindingEl = null;
   updateMenuControls();
+  // Sync ball cam HUD indicator if that binding changed
+  var _bcEl = document.getElementById('ballcam-indicator');
+  if (_bcEl) _bcEl.textContent = 'BALL CAM [' + keyDisplayName(settings.controls.ballcam).toUpperCase() + ']';
   e.preventDefault();
   e.stopPropagation();
   return true;
@@ -1649,105 +1660,56 @@ function loadGarage() {
       if (saved.boost) garage.boost = saved.boost;
       if (saved.topper) garage.topper = saved.topper;
     }
-  } catch(e) {}
+  } catch(e) { console.warn('[RocketArena]', e); }
 }
 
 function saveGarage() {
-  localStorage.setItem('rocketArenaGarage', JSON.stringify(garage));
+  try { localStorage.setItem('rocketArenaGarage', JSON.stringify(garage)); } catch(e) { console.warn('[RocketArena]', e); }
+}
+
+// Generic garage section builder — eliminates repeated forEach patterns
+function buildSection(containerId, items, getContent, isSelected, onSelect) {
+  var el = document.getElementById(containerId);
+  el.innerHTML = '';
+  var lvl = playerLevel || 1;
+  items.forEach(function(it) {
+    var div = document.createElement('div');
+    var locked = it.level && lvl < it.level;
+    div.className = 'garage-item' + (isSelected(it) ? ' selected' : '') + (locked ? ' locked' : '');
+    if (it.name) div.title = locked ? 'Unlocks at Level ' + it.level : it.name;
+    getContent(div, it);
+    if (!locked) {
+      div.addEventListener('click', function() { onSelect(it); saveGarage(); buildGarageUI(); applyGarage(); });
+    }
+    el.appendChild(div);
+  });
 }
 
 function buildGarageUI() {
-  var lvl = playerLevel || 1;
+  buildSection('garage-bodies', GARAGE_BODIES,
+    function(div, b) { div.textContent = b.name; },
+    function(b) { return b.id === garage.body; },
+    function(b) { garage.body = b.id; });
 
-  // Bodies
-  var bodiesEl = document.getElementById('garage-bodies');
-  bodiesEl.innerHTML = '';
-  GARAGE_BODIES.forEach(function(b) {
-    var item = document.createElement('div');
-    item.className = 'garage-item' + (b.id === garage.body ? ' selected' : '') + (lvl < b.level ? ' locked' : '');
-    item.textContent = b.name;
-    item.title = lvl < b.level ? 'Unlocks at Level ' + b.level : b.name;
-    if (lvl >= b.level) {
-      item.addEventListener('click', function() {
-        garage.body = b.id;
-        saveGarage();
-        buildGarageUI();
-        applyGarage();
-      });
-    }
-    bodiesEl.appendChild(item);
-  });
+  buildSection('garage-colors', GARAGE_COLORS,
+    function(div, c) { div.innerHTML = '<div class="color-swatch" style="background:' + c + '"></div>'; },
+    function(c) { return c === garage.color; },
+    function(c) { garage.color = c; settings.carColor = c; });
 
-  // Colors
-  var colorsEl = document.getElementById('garage-colors');
-  colorsEl.innerHTML = '';
-  GARAGE_COLORS.forEach(function(c) {
-    var item = document.createElement('div');
-    item.className = 'garage-item' + (c === garage.color ? ' selected' : '');
-    item.innerHTML = '<div class="color-swatch" style="background:' + c + '"></div>';
-    item.addEventListener('click', function() {
-      garage.color = c;
-      settings.carColor = c;
-      saveGarage();
-      buildGarageUI();
-      applyGarage();
-    });
-    colorsEl.appendChild(item);
-  });
+  buildSection('garage-accents', GARAGE_ACCENTS,
+    function(div, c) { div.innerHTML = '<div class="color-swatch" style="background:' + c + '"></div>'; },
+    function(c) { return c === garage.accent; },
+    function(c) { garage.accent = c; });
 
-  // Accents
-  var accentsEl = document.getElementById('garage-accents');
-  accentsEl.innerHTML = '';
-  GARAGE_ACCENTS.forEach(function(c) {
-    var item = document.createElement('div');
-    item.className = 'garage-item' + (c === garage.accent ? ' selected' : '');
-    item.innerHTML = '<div class="color-swatch" style="background:' + c + '"></div>';
-    item.addEventListener('click', function() {
-      garage.accent = c;
-      saveGarage();
-      buildGarageUI();
-      applyGarage();
-    });
-    accentsEl.appendChild(item);
-  });
+  buildSection('garage-boosts', GARAGE_BOOSTS,
+    function(div, b) { div.innerHTML = '<div class="color-swatch" style="background:#' + b.color.toString(16).padStart(6, '0') + '"></div>'; },
+    function(b) { return b.id === garage.boost; },
+    function(b) { garage.boost = b.id; });
 
-  // Boosts
-  var boostsEl = document.getElementById('garage-boosts');
-  boostsEl.innerHTML = '';
-  GARAGE_BOOSTS.forEach(function(b) {
-    var item = document.createElement('div');
-    item.className = 'garage-item' + (b.id === garage.boost ? ' selected' : '') + (lvl < b.level ? ' locked' : '');
-    item.innerHTML = '<div class="color-swatch" style="background:#' + b.color.toString(16).padStart(6, '0') + '"></div>';
-    item.title = lvl < b.level ? 'Unlocks at Level ' + b.level : b.name;
-    if (lvl >= b.level) {
-      item.addEventListener('click', function() {
-        garage.boost = b.id;
-        saveGarage();
-        buildGarageUI();
-        applyGarage();
-      });
-    }
-    boostsEl.appendChild(item);
-  });
-
-  // Toppers
-  var toppersEl = document.getElementById('garage-toppers');
-  toppersEl.innerHTML = '';
-  GARAGE_TOPPERS.forEach(function(t) {
-    var item = document.createElement('div');
-    item.className = 'garage-item' + (t.id === garage.topper ? ' selected' : '') + (lvl < t.level ? ' locked' : '');
-    item.textContent = t.name;
-    item.title = lvl < t.level ? 'Unlocks at Level ' + t.level : t.name;
-    if (lvl >= t.level) {
-      item.addEventListener('click', function() {
-        garage.topper = t.id;
-        saveGarage();
-        buildGarageUI();
-        applyGarage();
-      });
-    }
-    toppersEl.appendChild(item);
-  });
+  buildSection('garage-toppers', GARAGE_TOPPERS,
+    function(div, t) { div.textContent = t.name; },
+    function(t) { return t.id === garage.topper; },
+    function(t) { garage.topper = t.id; });
 }
 
 var _currentPlayerBody = 'octane';
@@ -1885,18 +1847,19 @@ function recalcActiveValues() {
 // STADIUM SYSTEM
 // ==========================================================================
 var STADIUMS = {
-  standard: { fw: 96, fl: 120, wh: 24, gw: 21, gh: 8, gd: 10, floorColor: '#3a9a3a', stripe1: '#3eaa3e', stripe2: '#2e882e', fogColor: 0x101828, ambientColor: 0xc0d0e8, wallColor: 0x556677, wallOpacity: 0.9, rampColor: 0x4a5a6a, standColor: 0x1a1a30, crowdColor1: 0xff6600, crowdColor2: 0x0066ff },
-  small:    { fw: 68, fl: 84,  wh: 16, gw: 17, gh: 7,  gd: 8,  floorColor: '#3a9a3a', stripe1: '#3eaa3e', stripe2: '#2e882e', fogColor: 0x101828, ambientColor: 0xc0d0e8, wallColor: 0x556677, wallOpacity: 0.9, rampColor: 0x4a5a6a, standColor: 0x1a1a30, crowdColor1: 0xff6600, crowdColor2: 0x0066ff },
-  large:    { fw: 120, fl: 150, wh: 24, gw: 26, gh: 11, gd: 12, floorColor: '#3a9a3a', stripe1: '#3eaa3e', stripe2: '#2e882e', fogColor: 0x101828, ambientColor: 0xc0d0e8, wallColor: 0x556677, wallOpacity: 0.9, rampColor: 0x4a5a6a, standColor: 0x1a1a30, crowdColor1: 0xff6600, crowdColor2: 0x0066ff },
-  wide:     { fw: 130, fl: 100, wh: 18, gw: 24, gh: 8, gd: 10, floorColor: '#3a9a3a', stripe1: '#3eaa3e', stripe2: '#2e882e', fogColor: 0x101828, ambientColor: 0xc0d0e8, wallColor: 0x556677, wallOpacity: 0.9, rampColor: 0x4a5a6a, standColor: 0x1a1a30, crowdColor1: 0xff6600, crowdColor2: 0x0066ff },
-  neon:     { fw: 96, fl: 120, wh: 24, gw: 21, gh: 8, gd: 10, floorColor: '#0a0a2e', stripe1: '#0e0e38', stripe2: '#08082a', fogColor: 0x020210, ambientColor: 0x6060ee, wallColor: 0x1a1a44, wallOpacity: 0.9, rampColor: 0x2a2a55, standColor: 0x0a0a20, crowdColor1: 0xff00ff, crowdColor2: 0x00ffff },
-  night:    { fw: 96, fl: 120, wh: 24, gw: 21, gh: 8, gd: 10, floorColor: '#1a4a1a', stripe1: '#1e561e', stripe2: '#163e16', fogColor: 0x010108, ambientColor: 0x506070, wallColor: 0x3a4a5a, wallOpacity: 0.85, rampColor: 0x3a4a5a, standColor: 0x0f0f1e, crowdColor1: 0xff6600, crowdColor2: 0x0066ff }
+  standard: { fw: 96,  fl: 120, wh: 24, gw: 21, gh: 8,  gd: 10, cornerR: 8,  floorColor: '#06080e', stripe1: '#080a12', stripe2: '#04060a', fogColor: 0x06080e, ambientColor: 0x404860, wallColor: 0x1c1e24, wallOpacity: 0.9, rampColor: 0x181a20, ceilColor: 0x141618, standColor: 0x1a1a30, crowdColor1: 0xff6600, crowdColor2: 0x0066ff },
+  small:    { fw: 68,  fl: 84,  wh: 16, gw: 17, gh: 7,  gd: 8,  cornerR: 6,  floorColor: '#3a9a3a', stripe1: '#3eaa3e', stripe2: '#2e882e', fogColor: 0x101828, ambientColor: 0xc0d0e8, wallColor: 0x556677, wallOpacity: 0.9, rampColor: 0x4a5a6a, standColor: 0x1a1a30, crowdColor1: 0xff6600, crowdColor2: 0x0066ff },
+  large:    { fw: 120, fl: 150, wh: 24, gw: 26, gh: 11, gd: 12, cornerR: 10, floorColor: '#3a9a3a', stripe1: '#3eaa3e', stripe2: '#2e882e', fogColor: 0x101828, ambientColor: 0xc0d0e8, wallColor: 0x556677, wallOpacity: 0.9, rampColor: 0x4a5a6a, standColor: 0x1a1a30, crowdColor1: 0xff6600, crowdColor2: 0x0066ff },
+  wide:     { fw: 130, fl: 100, wh: 18, gw: 24, gh: 8,  gd: 10, cornerR: 10, floorColor: '#3a9a3a', stripe1: '#3eaa3e', stripe2: '#2e882e', fogColor: 0x101828, ambientColor: 0xc0d0e8, wallColor: 0x556677, wallOpacity: 0.9, rampColor: 0x4a5a6a, standColor: 0x1a1a30, crowdColor1: 0xff6600, crowdColor2: 0x0066ff },
+  neon:     { fw: 96,  fl: 120, wh: 24, gw: 21, gh: 8,  gd: 10, cornerR: 8,  floorColor: '#0a0a2e', stripe1: '#0e0e38', stripe2: '#08082a', fogColor: 0x020210, ambientColor: 0x6060ee, wallColor: 0x1a1a44, wallOpacity: 0.9, rampColor: 0x2a2a55, standColor: 0x0a0a20, crowdColor1: 0xff00ff, crowdColor2: 0x00ffff },
+  night:    { fw: 96,  fl: 120, wh: 24, gw: 21, gh: 8,  gd: 10, cornerR: 8,  floorColor: '#1a4a1a', stripe1: '#1e561e', stripe2: '#163e16', fogColor: 0x010108, ambientColor: 0x506070, wallColor: 0x3a4a5a, wallOpacity: 0.85, rampColor: 0x3a4a5a, standColor: 0x0f0f1e, crowdColor1: 0xff6600, crowdColor2: 0x0066ff }
 };
 
 function applyStadium() {
   var s = STADIUMS[settings.stadium] || STADIUMS.standard;
   FW = s.fw; FL = s.fl; WH = s.wh;
   GW = s.gw; GH = s.gh; GD = s.gd;
+  CORNER_R = s.cornerR || 8;
 }
 
 // ==========================================================================
@@ -1960,6 +1923,23 @@ var _curveResult = { normal: new THREE.Vector3(), onCurve: true, center: new THR
 // Reusable up vector for replay camera
 var _upY = new THREE.Vector3(0, 1, 0);
 
+// Curve zone descriptor table for getCurveInfo — replaces 8 near-identical blocks.
+// isX: arc in XY plane (true) or YZ plane (false)
+// cHorizSign: +1 = positive edge (right/front), -1 = negative edge (left/back)
+// yFloor: true = floor-wall curve, false = wall-ceiling curve
+// d0Sign: sign for horizontal delta in the normal-direction test
+// hasGoal: true = apply goal-opening exclusion check
+var _curveZones = [
+  { isX:true,  cHorizSign:-1, yFloor:true,  d0Sign:-1              }, // floor-left
+  { isX:true,  cHorizSign: 1, yFloor:true,  d0Sign: 1              }, // floor-right
+  { isX:false, cHorizSign: 1, yFloor:true,  d0Sign: 1, hasGoal:true}, // floor-front
+  { isX:false, cHorizSign:-1, yFloor:true,  d0Sign:-1, hasGoal:true}, // floor-back
+  { isX:true,  cHorizSign:-1, yFloor:false, d0Sign:-1              }, // ceil-left
+  { isX:true,  cHorizSign: 1, yFloor:false, d0Sign: 1              }, // ceil-right
+  { isX:false, cHorizSign: 1, yFloor:false, d0Sign: 1              }, // ceil-front
+  { isX:false, cHorizSign:-1, yFloor:false, d0Sign:-1              }  // ceil-back
+];
+
 // ==========================================================================
 // STATE
 // ==========================================================================
@@ -1982,6 +1962,8 @@ var pCanDodge = false, pDodgeTimer = 0;
 var pSpin = 0;                       // spin animation timer
 var pFlipDirX = 0, pFlipDirZ = 0;    // flip direction for flip cancel (half-flip)
 var pPitch = 0;                      // aerial nose pitch angle
+var pRoll = 0;                       // aerial body roll angle
+var pAngVelPitch = 0, pAngVelYaw = 0, pAngVelRoll = 0; // aerial angular velocities (rad/s)
 var pPowerslide = false;             // powerslide active
 var pSupersonic = false;             // at supersonic speed
 var pSurface = 'floor';             // 'floor','ceiling','wallXn','wallXp','wallZn','wallZp','air'
@@ -1992,10 +1974,16 @@ var pTargetQuat = new THREE.Quaternion();
 var pVisualQuat = new THREE.Quaternion();
 var WALL_MIN_SPEED = 2;             // minimum speed to stick to walls (RL-like sticky driving)
 var WALL_DETACH_GRACE = 0.6;        // seconds of grace before falling off
+var _pSmoothNormal = new THREE.Vector3(0, 1, 0); // smoothed surface normal for camera/visuals
+var _pOnCurve = false;              // true while car is in a curve transition
+var _pSnapVisual = false;           // snap visual quaternion on next syncVisuals (no slerp)
 var pDemoed = false, pDemoTimer = 0; // demolished state
 var isOvertime = false;              // sudden-death overtime active
 var _slowmoTimer = 0;                // slow-motion effect on goal
 var _slowmoScale = 0.3;              // slow-mo speed multiplier
+var _slowmoDuration = 0.8;           // initial slow-mo timer value (used for ease formula)
+var overtimeAnnounceT = 0;           // separate timer for overtime_announce state (not shared with goalT)
+var _goalBloomTimer = 0;             // dt-based timer for bloom reset after goal
 var aP = new THREE.Vector3();        // AI position
 var aV = new THREE.Vector3();        // AI velocity
 var aRot = Math.PI, aSpeed = 0;
@@ -2065,12 +2053,12 @@ function loadXP() {
   try {
     var saved = JSON.parse(localStorage.getItem('rocketArenaXP'));
     if (saved) { playerXP = saved.xp || 0; playerLevel = saved.level || 1; }
-  } catch(e) {}
+  } catch(e) { console.warn('[RocketArena]', e); }
   XP_PER_LEVEL = Math.floor(100 + (playerLevel - 1) * 20);
   updateLevelDisplay();
 }
 function saveXP() {
-  try { localStorage.setItem('rocketArenaXP', JSON.stringify({ xp: playerXP, level: playerLevel })); } catch(e) {}
+  try { localStorage.setItem('rocketArenaXP', JSON.stringify({ xp: playerXP, level: playerLevel })); } catch(e) { console.warn('[RocketArena]', e); }
 }
 function addXP(amount) {
   playerXP += amount;
@@ -2092,6 +2080,9 @@ var goalT = 0;
 var goalScorer = '';
 var keys = {};
 var ballCam = false;
+
+// Cached DOM refs for updateUI (assigned in init() to avoid per-frame getElementById)
+var _elBoostFill, _elBoostText, _elBallcam, _elPowerslide, _elBallSpeed, _elSupersonic, _elSpeedLines, _elLastTouch;
 var cameraTarget = new THREE.Vector3();
 var cameraPos = new THREE.Vector3();
 var cameraUp = new THREE.Vector3(0, 1, 0);
@@ -2435,7 +2426,7 @@ function shortAngleDiff(from, to) {
 
 function updateReplayCamera(dt) {
   replayCamAngle += dt * 0.3;
-  var progress = replayFrameIdx / (replayData.length - 1); // 0 to 1
+  var progress = replayData.length > 1 ? replayFrameIdx / (replayData.length - 1) : 0; // 0 to 1
 
   // RL-style: camera follows ball from behind/above, with slow orbit
   var goalZ = replayGoalScorer === 'player' ? -FL / 2 : FL / 2;
@@ -2527,7 +2518,7 @@ function playWallHitSound() {
   var ctx = getAudio(); if (!ctx) return;
   var osc = ctx.createOscillator();
   var gain = ctx.createGain();
-  var bufSize = ctx.sampleRate * 0.08;
+  var bufSize = ctx.sampleRate * 0.2;
   var buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
   var data = buf.getChannelData(0);
   for (var i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * 0.3;
@@ -2535,8 +2526,8 @@ function playWallHitSound() {
   noise.buffer = buf;
   noise.connect(gain); gain.connect(ctx.destination);
   gain.gain.setValueAtTime(0.08 * VOLUME_SCALE, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.06);
-  noise.start(); noise.stop(ctx.currentTime + 0.06);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+  noise.start(); noise.stop(ctx.currentTime + 0.2);
 }
 
 // Engine sound system
@@ -2561,10 +2552,47 @@ function updateEngineSound() {
   var speedFrac = Math.min(absSpeed / maxSpd, 1);
   // Frequency: 50Hz idle to 200Hz at max speed
   engineOsc.frequency.value = 50 + speedFrac * 150;
+  // Boost sound pitch scales with car speed (80Hz rumble → 200Hz roar at full boost)
+  if (_boostSoundNode) {
+    _boostSoundNode.osc.frequency.value = 80 + speedFrac * 120;
+  }
   // Volume: quiet idle, louder at speed, capped low
   var targetVol = (0.01 + speedFrac * 0.04) * VOLUME_SCALE;
   if (gameState !== 'playing') targetVol = 0;
   engineGain.gain.value += (targetVol - engineGain.gain.value) * 0.1;
+}
+
+function playPowerslideScreech() {
+  var ctx = getAudio(); if (!ctx) return;
+  var bufSize = ctx.sampleRate * 0.08;
+  var buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+  var data = buf.getChannelData(0);
+  for (var i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1);
+  var noise = ctx.createBufferSource();
+  var filter = ctx.createBiquadFilter();
+  var gain = ctx.createGain();
+  filter.type = 'bandpass'; filter.frequency.value = 900; filter.Q.value = 2;
+  noise.buffer = buf;
+  noise.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
+  gain.gain.setValueAtTime(0.05 * VOLUME_SCALE, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+  noise.start(); noise.stop(ctx.currentTime + 0.08);
+}
+
+function playLandingSound(impactSpeed) {
+  var ctx = getAudio(); if (!ctx || impactSpeed < 5) return;
+  var bufSize = ctx.sampleRate * 0.15;
+  var buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+  var data = buf.getChannelData(0);
+  for (var i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * 0.5;
+  var noise = ctx.createBufferSource();
+  var gain = ctx.createGain();
+  noise.buffer = buf;
+  noise.connect(gain); gain.connect(ctx.destination);
+  var vol = Math.min(impactSpeed / 30, 1) * 0.12 * VOLUME_SCALE;
+  gain.gain.setValueAtTime(vol, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+  noise.start(); noise.stop(ctx.currentTime + 0.15);
 }
 
 // Crowd ambience
@@ -2627,17 +2655,36 @@ var AI_STATE_TIMER = 0;
 var AI_DODGE_COOLDOWN = 0;
 var AI_TARGET = new THREE.Vector3();
 
+// AI dodge pending timers — replace setTimeout calls so slow-mo scaling works correctly
+var _aKickoffDodgeT = 0;   // kickoff flip pending (s)
+var _aClearFlipT = 0;      // clear-flip pending (s)
+var _aSpeedDodgeT = 0;     // speed-dodge pending (s)
+var _aSpeedDodgeX = 0;     // captured X impulse for speed dodge
+var _aSpeedDodgeZ = 0;     // captured Z impulse for speed dodge
+var _aDoubleJumpT = 0;     // double-jump aerial pending (s)
+var _aFlickT = 0;          // quick-flick pending (s)
+
 // ==========================================================================
 // INITIALIZATION
 // ==========================================================================
 function init() {
   _initSurfaceAxes(); // Pre-allocate surface axes cache
 
-  scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x101828);
-  scene.fog = new THREE.FogExp2(0x101828, 0.004);
+  // Cache UI DOM refs once (avoids 480 getElementById calls/second in updateUI)
+  _elBoostFill    = document.getElementById('boost-fill');
+  _elBoostText    = document.getElementById('boost-text');
+  _elBallcam      = document.getElementById('ballcam-indicator');
+  _elPowerslide   = document.getElementById('powerslide-indicator');
+  _elBallSpeed    = document.getElementById('ball-speed');
+  _elSupersonic   = document.getElementById('supersonic');
+  _elSpeedLines   = document.getElementById('speed-lines');
+  _elLastTouch    = document.getElementById('last-touch');
 
-  camera = new THREE.PerspectiveCamera(100, window.innerWidth / window.innerHeight, 0.5, 500);
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x06080e);
+  scene.fog = new THREE.FogExp2(0x06080e, 0.003);
+
+  camera = new THREE.PerspectiveCamera(110, window.innerWidth / window.innerHeight, 0.5, 500);
   camera.position.set(0, 35, 70);
 
   renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -2659,7 +2706,7 @@ function init() {
   createSkybox();
 
   // Lights — bright RL stadium floodlighting
-  scene.add(new THREE.AmbientLight(0xc0d0e8, 1.5));
+  scene.add(new THREE.AmbientLight(0x606880, 0.9));
 
   var hemi = new THREE.HemisphereLight(0xe0eeff, 0x776655, 1.4);
   scene.add(hemi);
@@ -2871,41 +2918,22 @@ function createSkybox() {
 // ==========================================================================
 // ARENA
 // ==========================================================================
-// Build a quarter-pipe ramp surface with arc in the XY plane, extruded along Z
-function buildRampXY(cx, cy, radius, a0, a1, zMin, zMax, segs, mat) {
+// Build a quarter-pipe ramp: arc in the plane of (a0Axis, a1Axis), extruded along extAxis.
+// c0/c1 = arc center coords; extMin/extMax = extrusion range; angStart/angEnd = arc angles.
+// Replaces the former buildRampXY (a0=0,a1=1,ext=2) and buildRampYZ (a0=1,a1=2,ext=0).
+function buildRamp(c0, c1, a0Axis, a1Axis, extAxis, extMin, extMax, radius, angStart, angEnd, segs, mat) {
   var geo = new THREE.BufferGeometry();
   var pos = [], nrm = [], uv = [], idx = [];
+  var v0 = [0, 0, 0], v1 = [0, 0, 0], n = [0, 0, 0];
   for (var i = 0; i <= segs; i++) {
     var t = i / segs;
-    var a = a0 + t * (a1 - a0);
+    var a = angStart + t * (angEnd - angStart);
     var ca = Math.cos(a), sa = Math.sin(a);
-    pos.push(cx + ca * radius, cy + sa * radius, zMin);
-    nrm.push(-ca, -sa, 0); uv.push(t, 0);
-    pos.push(cx + ca * radius, cy + sa * radius, zMax);
-    nrm.push(-ca, -sa, 0); uv.push(t, 1);
-  }
-  for (var i = 0; i < segs; i++) {
-    idx.push(i*2, (i+1)*2, i*2+1, i*2+1, (i+1)*2, (i+1)*2+1);
-  }
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
-  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-  geo.setIndex(idx);
-  return new THREE.Mesh(geo, mat);
-}
-
-// Build a quarter-pipe ramp surface with arc in the YZ plane, extruded along X
-function buildRampYZ(cy, cz, radius, a0, a1, xMin, xMax, segs, mat) {
-  var geo = new THREE.BufferGeometry();
-  var pos = [], nrm = [], uv = [], idx = [];
-  for (var i = 0; i <= segs; i++) {
-    var t = i / segs;
-    var a = a0 + t * (a1 - a0);
-    var ca = Math.cos(a), sa = Math.sin(a);
-    pos.push(xMin, cy + ca * radius, cz + sa * radius);
-    nrm.push(0, -ca, -sa); uv.push(t, 0);
-    pos.push(xMax, cy + ca * radius, cz + sa * radius);
-    nrm.push(0, -ca, -sa); uv.push(t, 1);
+    v0[a0Axis] = c0 + ca * radius; v0[a1Axis] = c1 + sa * radius; v0[extAxis] = extMin;
+    v1[a0Axis] = c0 + ca * radius; v1[a1Axis] = c1 + sa * radius; v1[extAxis] = extMax;
+    n[a0Axis] = -ca; n[a1Axis] = -sa; n[extAxis] = 0;
+    pos.push(v0[0], v0[1], v0[2]); nrm.push(n[0], n[1], n[2]); uv.push(t, 0);
+    pos.push(v1[0], v1[1], v1[2]); nrm.push(n[0], n[1], n[2]); uv.push(t, 1);
   }
   for (var i = 0; i < segs; i++) {
     idx.push(i*2, (i+1)*2, i*2+1, i*2+1, (i+1)*2, (i+1)*2+1);
@@ -2975,29 +3003,29 @@ function createArena() {
   // --- CURVED RAMPS (floor-to-wall) --- quarter-pipe transitions matching getCurveInfo physics
   var zRampMin = -FL/2 + cornerR, zRampMax = FL/2 - cornerR;
   // Left side floor ramp: arc center (-FW/2+CR, CR), arc from π to 3π/2
-  arenaGroup.add(buildRampXY(-FW/2 + CR, CR, CR, Math.PI, Math.PI * 1.5, zRampMin, zRampMax, curveSegs, rampMat));
+  arenaGroup.add(buildRamp(-FW/2 + CR, CR, 0, 1, 2, zRampMin, zRampMax, CR, Math.PI, Math.PI * 1.5, curveSegs, rampMat));
   // Right side floor ramp: arc center (FW/2-CR, CR), arc from -π/2 to 0
-  arenaGroup.add(buildRampXY(FW/2 - CR, CR, CR, -Math.PI/2, 0, zRampMin, zRampMax, curveSegs, rampMat));
+  arenaGroup.add(buildRamp(FW/2 - CR, CR, 0, 1, 2, zRampMin, zRampMax, CR, -Math.PI/2, 0, curveSegs, rampMat));
   // End floor ramps (left and right of goal openings)
   var endXMin = -FW/2 + cornerR, endXMax = FW/2 - cornerR;
   if (-GW/2 - endXMin > 0.5) {
     // Front end ramps (z = FL/2): arc in YZ plane, angles π/2 to π
-    arenaGroup.add(buildRampYZ(CR, FL/2 - CR, CR, Math.PI/2, Math.PI, endXMin, -GW/2, curveSegs, rampMat));
-    arenaGroup.add(buildRampYZ(CR, FL/2 - CR, CR, Math.PI/2, Math.PI, GW/2, endXMax, curveSegs, rampMat));
+    arenaGroup.add(buildRamp(CR, FL/2 - CR, 1, 2, 0, endXMin, -GW/2, CR, Math.PI/2, Math.PI, curveSegs, rampMat));
+    arenaGroup.add(buildRamp(CR, FL/2 - CR, 1, 2, 0, GW/2, endXMax, CR, Math.PI/2, Math.PI, curveSegs, rampMat));
     // Back end ramps (z = -FL/2): arc in YZ plane, angles π to 3π/2
-    arenaGroup.add(buildRampYZ(CR, -FL/2 + CR, CR, Math.PI, Math.PI * 1.5, endXMin, -GW/2, curveSegs, rampMat));
-    arenaGroup.add(buildRampYZ(CR, -FL/2 + CR, CR, Math.PI, Math.PI * 1.5, GW/2, endXMax, curveSegs, rampMat));
+    arenaGroup.add(buildRamp(CR, -FL/2 + CR, 1, 2, 0, endXMin, -GW/2, CR, Math.PI, Math.PI * 1.5, curveSegs, rampMat));
+    arenaGroup.add(buildRamp(CR, -FL/2 + CR, 1, 2, 0, GW/2, endXMax, CR, Math.PI, Math.PI * 1.5, curveSegs, rampMat));
   }
 
   // --- CURVED RAMPS (wall-to-ceiling) ---
   // Left ceiling ramp: arc center (-FW/2+CR, WH-CR), arc from π/2 to π
-  arenaGroup.add(buildRampXY(-FW/2 + CR, WH - CR, CR, Math.PI/2, Math.PI, zRampMin, zRampMax, curveSegs, rampMat));
+  arenaGroup.add(buildRamp(-FW/2 + CR, WH - CR, 0, 1, 2, zRampMin, zRampMax, CR, Math.PI/2, Math.PI, curveSegs, rampMat));
   // Right ceiling ramp: arc center (FW/2-CR, WH-CR), arc from 0 to π/2
-  arenaGroup.add(buildRampXY(FW/2 - CR, WH - CR, CR, 0, Math.PI/2, zRampMin, zRampMax, curveSegs, rampMat));
+  arenaGroup.add(buildRamp(FW/2 - CR, WH - CR, 0, 1, 2, zRampMin, zRampMax, CR, 0, Math.PI/2, curveSegs, rampMat));
   // Front ceiling ramp (full width)
-  arenaGroup.add(buildRampYZ(WH - CR, FL/2 - CR, CR, 0, Math.PI/2, endXMin, endXMax, curveSegs, rampMat));
+  arenaGroup.add(buildRamp(WH - CR, FL/2 - CR, 1, 2, 0, endXMin, endXMax, CR, 0, Math.PI/2, curveSegs, rampMat));
   // Back ceiling ramp (full width)
-  arenaGroup.add(buildRampYZ(WH - CR, -FL/2 + CR, CR, -Math.PI/2, 0, endXMin, endXMax, curveSegs, rampMat));
+  arenaGroup.add(buildRamp(WH - CR, -FL/2 + CR, 1, 2, 0, endXMin, endXMax, CR, -Math.PI/2, 0, curveSegs, rampMat));
 
   // --- ROUNDED CORNERS --- (RL-style smooth curved walls where side meets end)
   var cornerPositions = [
@@ -3021,7 +3049,7 @@ function createArena() {
 
   // --- CEILING ---
   var ceilMat = new THREE.MeshStandardMaterial({
-    color: 0x222238, roughness: 0.6, metalness: 0.3, side: THREE.DoubleSide
+    color: st.ceilColor || 0x141618, roughness: 0.6, metalness: 0.3, side: THREE.DoubleSide
   });
   var ceil = new THREE.Mesh(new THREE.PlaneGeometry(FW - CR * 2, FL - CR * 2), ceilMat);
   ceil.rotation.x = Math.PI / 2;
@@ -3357,54 +3385,30 @@ function createFieldTexture() {
   var ctx = c.getContext('2d');
   var W = c.width, H = c.height;
 
-  var st = STADIUMS[settings.stadium] || STADIUMS.standard;
-
-  // Base field color — rich RL green
-  ctx.fillStyle = st.floorColor;
-  ctx.fillRect(0, 0, W, H);
-
-  // Prominent mow stripes (alternating light/dark — RL signature look)
-  var stripeH = 128;
-  for (var i = 0; i < H; i += stripeH) {
-    ctx.fillStyle = (i / stripeH) % 2 === 0 ? st.stripe1 : st.stripe2;
-    ctx.fillRect(0, i, W, stripeH);
-  }
-
-  // Team-colored half tint (orange side top half, blue side bottom half in canvas coords)
-  // Canvas Y maps to field Z: top=negative Z (blue/AI side), bottom=positive Z (orange/player side)
-  var orangeTint = ctx.createLinearGradient(0, H / 2, 0, H);
-  orangeTint.addColorStop(0, 'rgba(255,100,0,0)');
-  orangeTint.addColorStop(0.3, 'rgba(255,100,0,0.04)');
-  orangeTint.addColorStop(0.7, 'rgba(255,80,0,0.08)');
-  orangeTint.addColorStop(1, 'rgba(255,60,0,0.12)');
-  ctx.fillStyle = orangeTint;
+  // --- SPLIT FLOOR HALVES (RL blue/orange team colors) ---
+  // Top half = blue team (AI/negative Z side)
+  ctx.fillStyle = '#0a1428';
+  ctx.fillRect(0, 0, W, H / 2);
+  // Bottom half = orange team (player/positive Z side)
+  ctx.fillStyle = '#1e0d00';
   ctx.fillRect(0, H / 2, W, H / 2);
 
-  var blueTint = ctx.createLinearGradient(0, 0, 0, H / 2);
-  blueTint.addColorStop(0, 'rgba(0,60,255,0.12)');
-  blueTint.addColorStop(0.3, 'rgba(0,80,255,0.08)');
-  blueTint.addColorStop(0.7, 'rgba(0,80,255,0.04)');
-  blueTint.addColorStop(1, 'rgba(0,80,255,0)');
-  ctx.fillStyle = blueTint;
-  ctx.fillRect(0, 0, W, H / 2);
-
-  // Grass texture noise — finer grain at higher res
-  for (var n = 0; n < 20000; n++) {
-    var nx = Math.random() * W, ny = Math.random() * H;
-    ctx.fillStyle = 'rgba(255,255,255,' + (Math.random() * 0.015) + ')';
-    ctx.fillRect(nx, ny, 1, 1);
+  // --- MOW STRIPES (subtle per-half color variation) ---
+  var stripeH = 128;
+  for (var i = 0; i < H / 2; i += stripeH) {
+    ctx.fillStyle = (i / stripeH) % 2 === 0 ? 'rgba(20,60,100,0.18)' : 'rgba(10,30,60,0.18)';
+    ctx.fillRect(0, i, W, stripeH);
   }
-  // Dark speckles for depth
-  for (var d = 0; d < 12000; d++) {
-    ctx.fillStyle = 'rgba(0,0,0,' + (Math.random() * 0.02) + ')';
-    ctx.fillRect(Math.random() * W, Math.random() * H, 1, 1);
+  for (var j = 0; j < H / 2; j += stripeH) {
+    ctx.fillStyle = (j / stripeH) % 2 === 0 ? 'rgba(100,50,10,0.18)' : 'rgba(60,25,5,0.18)';
+    ctx.fillRect(0, H / 2 + j, W, stripeH);
   }
 
-  // Field markings — crisp white lines
-  ctx.strokeStyle = 'rgba(255,255,255,0.65)';
-  ctx.lineWidth = 6;
+  // --- WHITE FIELD MARKINGS ---
+  ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+  ctx.lineWidth = 7;
 
-  var mx = 40, my = 40; // margin
+  var mx = 40, my = 40;
   var fw = W - mx * 2, fh = H - my * 2;
 
   // Border
@@ -3416,78 +3420,88 @@ function createFieldTexture() {
   ctx.lineTo(W - mx, H / 2);
   ctx.stroke();
 
-  // Center circle (RL uses a large one)
-  ctx.lineWidth = 6;
+  // Center circle
+  ctx.lineWidth = 7;
   ctx.beginPath();
   ctx.arc(W / 2, H / 2, 280, 0, Math.PI * 2);
   ctx.stroke();
 
   // Center dot
-  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
   ctx.beginPath();
-  ctx.arc(W / 2, H / 2, 12, 0, Math.PI * 2);
+  ctx.arc(W / 2, H / 2, 14, 0, Math.PI * 2);
   ctx.fill();
 
-  // Kickoff position marks (4 diagonal spots + 2 center offset)
+  // Goal boxes
+  var gw = (GW / FW) * fw;
+  var gdSmall = 160;
+  ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+  ctx.lineWidth = 6;
+  ctx.strokeRect(W / 2 - gw / 2, my, gw, gdSmall);
+  ctx.strokeRect(W / 2 - gw / 2, H - my - gdSmall, gw, gdSmall);
+
+  // Corner arcs
+  ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+  ctx.lineWidth = 6;
+  [[mx, my, 0], [W - mx, my, Math.PI / 2], [W - mx, H - my, Math.PI], [mx, H - my, -Math.PI / 2]].forEach(function(corner) {
+    ctx.beginPath();
+    ctx.arc(corner[0], corner[1], 70, corner[2], corner[2] + Math.PI / 2);
+    ctx.stroke();
+  });
+
+  // Kickoff marks (4 diagonal positions)
   var kickoffDist = 340;
-  ctx.lineWidth = 4;
+  ctx.lineWidth = 5;
   [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(function(k) {
     var kx = W / 2 + k[0] * kickoffDist * 0.55;
     var ky = H / 2 + k[1] * kickoffDist;
-    // RL-style kickoff marks: small circle with line
-    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)';
     ctx.beginPath();
     ctx.arc(kx, ky, 14, 0, Math.PI * 2);
     ctx.stroke();
-    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
     ctx.beginPath();
     ctx.arc(kx, ky, 6, 0, Math.PI * 2);
     ctx.fill();
   });
 
-  // Goal areas — RL-style arced penalty zones
-  var gw = (GW / FW) * fw;
-  var gdSmall = 160;
-  var gdLarge = 280;
-
-  // Small goal boxes
-  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-  ctx.lineWidth = 5;
-  ctx.strokeRect(W / 2 - gw / 2, my, gw, gdSmall);
-  ctx.strokeRect(W / 2 - gw / 2, H - my - gdSmall, gw, gdSmall);
-
-  // Large penalty areas
-  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-  ctx.lineWidth = 4;
-  var gwLarge = gw * 1.5;
-  ctx.strokeRect(W / 2 - gwLarge / 2, my, gwLarge, gdLarge);
-  ctx.strokeRect(W / 2 - gwLarge / 2, H - my - gdLarge, gwLarge, gdLarge);
-
-  // Corner quarter-circles
-  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-  ctx.lineWidth = 5;
-  [[mx, my, 0], [W - mx, my, Math.PI / 2], [W - mx, H - my, Math.PI], [mx, H - my, -Math.PI / 2]].forEach(function(corner) {
+  // --- BOOST PAD INDICATORS ---
+  // Large boost pads (6 total — 3 per half, symmetric)
+  var largePads = [
+    [W * 0.25, H * 0.18], [W * 0.75, H * 0.18],
+    [W * 0.08, H * 0.5],  [W * 0.92, H * 0.5],
+    [W * 0.25, H * 0.82], [W * 0.75, H * 0.82]
+  ];
+  largePads.forEach(function(p) {
+    // Outer gold ring
+    ctx.strokeStyle = 'rgba(255,210,0,0.85)';
+    ctx.lineWidth = 8;
     ctx.beginPath();
-    ctx.arc(corner[0], corner[1], 60, corner[2], corner[2] + Math.PI / 2);
+    ctx.arc(p[0], p[1], 44, 0, Math.PI * 2);
     ctx.stroke();
+    // Inner fill
+    ctx.fillStyle = 'rgba(255,190,0,0.22)';
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], 36, 0, Math.PI * 2);
+    ctx.fill();
   });
 
-  // Half-way marks on sidelines
-  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-  ctx.lineWidth = 4;
-  [mx, W - mx].forEach(function(x) {
+  // Small boost pads (4 total — near center)
+  var smallPads = [
+    [W * 0.38, H * 0.35], [W * 0.62, H * 0.35],
+    [W * 0.38, H * 0.65], [W * 0.62, H * 0.65]
+  ];
+  smallPads.forEach(function(p) {
+    ctx.strokeStyle = 'rgba(220,170,0,0.55)';
+    ctx.lineWidth = 5;
     ctx.beginPath();
-    ctx.moveTo(x, H / 2 - 25);
-    ctx.lineTo(x, H / 2 + 25);
+    ctx.arc(p[0], p[1], 26, 0, Math.PI * 2);
     ctx.stroke();
+    ctx.fillStyle = 'rgba(200,150,0,0.12)';
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], 20, 0, Math.PI * 2);
+    ctx.fill();
   });
-
-  // RL logo circle at center (subtle)
-  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.arc(W / 2, H / 2, 45, 0, Math.PI * 2);
-  ctx.stroke();
 
   var tex = new THREE.CanvasTexture(c);
   tex.anisotropy = 8;
@@ -4110,6 +4124,13 @@ function spawnDemoExplosion(x, y, z, color) {
   triggerScreenShake(1.0);
 }
 
+// Helper: zero all aerial physics state (pitch/roll angles + angular velocities).
+// Called on landing, kickoff, manual reset, and demo respawn.
+function resetAerialState() {
+  pPitch = 0; pRoll = 0;
+  pAngVelPitch = 0; pAngVelYaw = 0; pAngVelRoll = 0;
+}
+
 function updateDemos(dt) {
   if (pDemoed) {
     pDemoTimer -= dt;
@@ -4121,6 +4142,7 @@ function updateDemos(dt) {
       pSpeed = 0; pRot = Math.PI;
       pBoost = BOOST_MAX;
       pSurface = 'floor'; pGround = true;
+      resetAerialState();
     }
   }
   if (aDemoed) {
@@ -4130,7 +4152,7 @@ function updateDemos(dt) {
       aiCar.visible = true;
       aP.set(0, CH / 2, -FL * 0.33);
       aV.set(0, 0, 0);
-      aSpeed = 0; aRot = 0;
+      aSpeed = 0; aRot = faceTowardBall(aP.x, aP.z); aGround = true;
       aBoost = BOOST_MAX;
     }
   }
@@ -4553,7 +4575,7 @@ function faceTowardBall(px, pz) {
 }
 
 function resetPositions() {
-  bP.set(0, BR_ACTIVE + 0.5, 0);
+  bP.set(0, BR_ACTIVE, 0);
   bV.set(0, 0, 0);
 
   // Heatseeker: serve ball toward the team that scored (scored-on team gets possession)
@@ -4579,8 +4601,7 @@ function resetPositions() {
   }
 
   // RL-style kickoff positions — randomized each reset
-  // 1v1: one of 3 positions per side (center-back, diagonal-left, diagonal-right)
-  var kickoffSlot = Math.floor(Math.random() * 3);
+  // 1v1: one of 5 positions per side (center-back, diagonal-left/right, near-diagonal-left/right)
   var pKickoffs, aKickoffs;
 
   if (activeGameMode === 'heatseeker') {
@@ -4602,15 +4623,20 @@ function resetPositions() {
     pKickoffs = [
       { x: 0, z: FL * 0.33 },              // center-back
       { x: -16, z: FL * 0.2 },             // diagonal-left
-      { x: 16, z: FL * 0.2 }               // diagonal-right
+      { x: 16, z: FL * 0.2 },              // diagonal-right
+      { x: -FW * 0.22, z: FL * 0.11 },     // near-diagonal-left (closer to ball)
+      { x: FW * 0.22, z: FL * 0.11 }       // near-diagonal-right (closer to ball)
     ];
     aKickoffs = [
       { x: 0, z: -FL * 0.33 },             // center-back
-      { x: 16, z: -FL * 0.2 },             // diagonal-right
-      { x: -16, z: -FL * 0.2 }             // diagonal-left
+      { x: 16, z: -FL * 0.2 },             // diagonal-right (mirrored)
+      { x: -16, z: -FL * 0.2 },            // diagonal-left (mirrored)
+      { x: FW * 0.22, z: -FL * 0.11 },     // near-diagonal-right (mirrored)
+      { x: -FW * 0.22, z: -FL * 0.11 }     // near-diagonal-left (mirrored)
     ];
   }
 
+  var kickoffSlot = Math.floor(Math.random() * pKickoffs.length);
   var pk = pKickoffs[kickoffSlot];
   var ak = aKickoffs[kickoffSlot];
 
@@ -4618,8 +4644,10 @@ function resetPositions() {
   pV.set(0, 0, 0);
   pRot = faceTowardBall(pk.x, pk.z);
   pSpeed = 0; pGround = true; pBoost = BOOST_MAX;
-  pCanDodge = false; pDodgeTimer = 0; pSpin = 0; pPitch = 0; pPowerslide = false;
+  pCanDodge = false; pDodgeTimer = 0; pSpin = 0; pPowerslide = false;
+  resetAerialState();
   pSurface = 'floor'; pWallGraceTimer = 0; pJumpCooldown = 0; pJumpHoldTimer = 0;
+  _pSmoothNormal.set(0, 1, 0); _pOnCurve = false; _pSnapVisual = true;
   cameraUp.set(0, 1, 0);
 
   aP.set(ak.x, CH / 2, ak.z);
@@ -4658,6 +4686,7 @@ function resetPositions() {
 var _currentStadium = 'standard';
 
 function startGame() {
+  keys = {}; // clear any held keys from previous session to prevent ghost inputs
   _menuFocusIdx = -1;
   var mfOld = document.querySelector('.menu-focus');
   if (mfOld) mfOld.classList.remove('menu-focus');
@@ -4736,7 +4765,7 @@ function rebuildArena() {
 
   // Apply stadium theme
   var s = STADIUMS[settings.stadium] || STADIUMS.standard;
-  scene.fog = new THREE.FogExp2(s.fogColor, 0.004);
+  scene.fog = new THREE.FogExp2(s.fogColor, 0.003);
   createSkybox(); // Regenerate skybox for environment reflections
 
   createArena();
@@ -4819,7 +4848,7 @@ function onGoal(scorer) {
   }
   playGoalHorn();
   triggerScreenShake(1.0);
-  _slowmoTimer = 0.8; // brief slow-motion on goal (RL-style)
+  _slowmoTimer = _slowmoDuration; // brief slow-motion on goal (RL-style)
   updateScoreboard();
   goalScorer = scorer;
   goalT = 0;
@@ -4832,10 +4861,10 @@ function onGoal(scorer) {
   // Start proper replay
   startReplay(scorer);
 
-  // Increase bloom during goal
+  // Increase bloom during goal (reset via dt-based timer in game loop)
   if (bloomPass) {
     bloomPass.strength = 1.0;
-    setTimeout(function() { if (bloomPass) bloomPass.strength = 0.4; }, 1500);
+    _goalBloomTimer = 1.5;
   }
 }
 
@@ -4934,76 +4963,44 @@ function getCurveInfo(px, py, pz, radius) {
   var hw = FW / 2; var hl = FL / 2;
   var margin = 1.5; // extra detection margin so cars don't slip under curves
 
-  // Floor-to-side-wall curves (left/right)
-  if (px - r < -hw + CR + margin && py - r < CR + margin) {
-    var cx = -hw + CR; var cy = CR;
-    var dx = px - cx; var dy = py - cy;
-    var dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist > 0.01 && (dx < 0 || dy < 0)) {
-      _curveResult.normal.set(dx / dist, dy / dist, 0); _curveResult.center.set(cx, cy, pz); _curveResult.dist = dist; _curveResult.radius = CR; return _curveResult;
-    }
-  }
-  if (px + r > hw - CR - margin && py - r < CR + margin) {
-    var cx = hw - CR; var cy = CR;
-    var dx = px - cx; var dy = py - cy;
-    var dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist > 0.01 && (dx > 0 || dy < 0)) {
-      _curveResult.normal.set(dx / dist, dy / dist, 0); _curveResult.center.set(cx, cy, pz); _curveResult.dist = dist; _curveResult.radius = CR; return _curveResult;
-    }
-  }
+  for (var zi = 0; zi < 8; zi++) {
+    var z = _curveZones[zi];
+    var cy = z.yFloor ? CR : (WH - CR);
+    var cHoriz = z.isX
+      ? (z.cHorizSign > 0 ? hw - CR : -hw + CR)
+      : (z.cHorizSign > 0 ? hl - CR : -hl + CR);
+    var p = z.isX ? px : pz;
 
-  // Floor-to-end-wall curves (front/back, only outside goal openings)
-  if (pz + r > hl - CR - margin && py - r < CR + margin && (Math.abs(px) > GW / 2 || py > GH)) {
-    var cz = hl - CR; var cy = CR;
-    var dz = pz - cz; var dy = py - cy;
-    var dist = Math.sqrt(dz * dz + dy * dy);
-    if (dist > 0.01 && (dz > 0 || dy < 0)) {
-      _curveResult.normal.set(0, dy / dist, dz / dist); _curveResult.center.set(px, cy, cz); _curveResult.dist = dist; _curveResult.radius = CR; return _curveResult;
-    }
-  }
-  if (pz - r < -hl + CR + margin && py - r < CR + margin && (Math.abs(px) > GW / 2 || py > GH)) {
-    var cz = -hl + CR; var cy = CR;
-    var dz = pz - cz; var dy = py - cy;
-    var dist = Math.sqrt(dz * dz + dy * dy);
-    if (dist > 0.01 && (dz < 0 || dy < 0)) {
-      _curveResult.normal.set(0, dy / dist, dz / dist); _curveResult.center.set(px, cy, cz); _curveResult.dist = dist; _curveResult.radius = CR; return _curveResult;
-    }
-  }
+    // Zone proximity check
+    var pClose = z.cHorizSign > 0 ? (p + r > cHoriz - margin) : (p - r < cHoriz + margin);
+    var yClose = z.yFloor ? (py - r < cy + margin) : (py + r > cy - margin);
+    if (!pClose || !yClose) continue;
 
-  // Ceiling-to-side-wall curves
-  if (px - r < -hw + CR + margin && py + r > WH - CR - margin) {
-    var cx = -hw + CR; var cy = WH - CR;
-    var dx = px - cx; var dy = py - cy;
-    var dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist > 0.01 && (dx < 0 || dy > 0)) {
-      _curveResult.normal.set(dx / dist, dy / dist, 0); _curveResult.center.set(cx, cy, pz); _curveResult.dist = dist; _curveResult.radius = CR; return _curveResult;
-    }
-  }
-  if (px + r > hw - CR - margin && py + r > WH - CR - margin) {
-    var cx = hw - CR; var cy = WH - CR;
-    var dx = px - cx; var dy = py - cy;
-    var dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist > 0.01 && (dx > 0 || dy > 0)) {
-      _curveResult.normal.set(dx / dist, dy / dist, 0); _curveResult.center.set(cx, cy, pz); _curveResult.dist = dist; _curveResult.radius = CR; return _curveResult;
-    }
-  }
+    // Goal-opening exclusion (only for floor-front and floor-back)
+    if (z.hasGoal && Math.abs(px) <= GW / 2 && py <= GH) continue;
 
-  // Ceiling-to-end-wall curves
-  if (pz + r > hl - CR - margin && py + r > WH - CR - margin) {
-    var cz = hl - CR; var cy = WH - CR;
-    var dz = pz - cz; var dy = py - cy;
-    var dist = Math.sqrt(dz * dz + dy * dy);
-    if (dist > 0.01 && (dz > 0 || dy > 0)) {
-      _curveResult.normal.set(0, dy / dist, dz / dist); _curveResult.center.set(px, cy, cz); _curveResult.dist = dist; _curveResult.radius = CR; return _curveResult;
+    // Delta and distance
+    var d0 = p - cHoriz, dy = py - cy;
+    var dist = Math.sqrt(d0 * d0 + dy * dy);
+    if (dist <= 0.01) continue;
+
+    // Normal direction test: ensure car is on the concave side of the curve.
+    // Equivalent to original per-zone checks (e.g. "dx < 0 || dy < 0" for floor-left).
+    // Formula: !(A || B) skips zone; A = (d0 * d0Sign > 0), B = (dy * dySign > 0).
+    // d0Sign encodes the expected horizontal direction; dySign = -1 (floor) or +1 (ceiling).
+    var dySign = z.yFloor ? -1 : 1;
+    if (!(d0 * z.d0Sign > 0 || dy * dySign > 0)) continue;
+
+    if (z.isX) {
+      _curveResult.normal.set(d0 / dist, dy / dist, 0);
+      _curveResult.center.set(cHoriz, cy, pz);
+    } else {
+      _curveResult.normal.set(0, dy / dist, d0 / dist);
+      _curveResult.center.set(px, cy, cHoriz);
     }
-  }
-  if (pz - r < -hl + CR + margin && py + r > WH - CR - margin) {
-    var cz = -hl + CR; var cy = WH - CR;
-    var dz = pz - cz; var dy = py - cy;
-    var dist = Math.sqrt(dz * dz + dy * dy);
-    if (dist > 0.01 && (dz < 0 || dy > 0)) {
-      _curveResult.normal.set(0, dy / dist, dz / dist); _curveResult.center.set(px, cy, cz); _curveResult.dist = dist; _curveResult.radius = CR; return _curveResult;
-    }
+    _curveResult.dist = dist;
+    _curveResult.radius = CR;
+    return _curveResult;
   }
 
   return null;
@@ -5103,36 +5100,37 @@ function clampCarOnSurface(pos, vel, surface) {
     // On left wall: car drives in Y-Z plane, X is fixed
     pos.x = -FW / 2 + hw; vel.x = 0;
     if (pos.y < CH / 2) { return 'floor'; }
-    if (pos.y > WH - CH / 2) { return 'ceiling'; }
+    if (pos.y > WH - CH / 2) { pos.y = WH - CH / 2; return 'ceiling'; }
     if (pos.z > FL / 2 - hl) { return 'wallZp'; }
     if (pos.z < -FL / 2 + hl) { return 'wallZn'; }
   } else if (surface === 'wallXp') {
     pos.x = FW / 2 - hw; vel.x = 0;
     if (pos.y < CH / 2) { return 'floor'; }
-    if (pos.y > WH - CH / 2) { return 'ceiling'; }
+    if (pos.y > WH - CH / 2) { pos.y = WH - CH / 2; return 'ceiling'; }
     if (pos.z > FL / 2 - hl) { return 'wallZp'; }
     if (pos.z < -FL / 2 + hl) { return 'wallZn'; }
   } else if (surface === 'wallZp') {
     // Front wall (+Z): car drives in X-Y plane
     pos.z = FL / 2 - hl; vel.z = 0;
     if (pos.y < CH / 2) { return 'floor'; }
-    if (pos.y > WH - CH / 2) { return 'ceiling'; }
+    if (pos.y > WH - CH / 2) { pos.y = WH - CH / 2; return 'ceiling'; }
     if (pos.x < -FW / 2 + hw) { return 'wallXn'; }
     if (pos.x > FW / 2 - hw) { return 'wallXp'; }
     if (!hoopsActive && !dropshotActive && pos.y < GH && Math.abs(pos.x) < GW / 2) { return 'air'; }
   } else if (surface === 'wallZn') {
     pos.z = -FL / 2 + hl; vel.z = 0;
     if (pos.y < CH / 2) { return 'floor'; }
-    if (pos.y > WH - CH / 2) { return 'ceiling'; }
+    if (pos.y > WH - CH / 2) { pos.y = WH - CH / 2; return 'ceiling'; }
     if (pos.x < -FW / 2 + hw) { return 'wallXn'; }
     if (pos.x > FW / 2 - hw) { return 'wallXp'; }
     if (!hoopsActive && !dropshotActive && pos.y < GH && Math.abs(pos.x) < GW / 2) { return 'air'; }
   } else if (surface === 'ceiling') {
-    pos.y = WH - CH / 2; vel.y = 0;
-    if (pos.x < -FW / 2 + hw) { return 'wallXn'; }
-    if (pos.x > FW / 2 - hw) { return 'wallXp'; }
-    if (pos.z > FL / 2 - hl) { return 'wallZp'; }
-    if (pos.z < -FL / 2 + hl) { return 'wallZn'; }
+    // Allow car below ceiling height during arc traversal; only clamp at the flat ceiling face
+    if (pos.y >= WH - CH / 2) {
+      pos.y = WH - CH / 2;
+      if (vel.y > 0) vel.y = 0;
+    }
+    return null;
   }
   return null; // no transition
 }
@@ -5171,10 +5169,7 @@ function detectWallAttach(pos, vel, speed) {
       if (vel.z < -0.3 || (pos.y > CR && pos.z <= -FL / 2 + hl)) return 'wallZn';
     }
   }
-  // Ceiling — attach when near ceiling (RL: very easy to stick, no velocity requirement)
-  if (pos.y >= WH - CH / 2 - CR - 2 && absSpeed >= WALL_MIN_SPEED) {
-    if (pos.y >= WH - CH / 2 - 1.5) return 'ceiling';
-  }
+  // Ceiling: no attachment — car falls off naturally (ceiling hard stop is in clampCar)
 
   return null;
 }
@@ -5286,8 +5281,10 @@ function updatePlayer(dt) {
   // Gamepad ball cam toggle (dynamic binding)
   if (gamepad.connected) {
     var bcBtn = settings.gamepadControls.ballcam;
-    var bcPrev = '_prev' + bcBtn.charAt(0).toUpperCase() + bcBtn.slice(1);
-    if (gamepad[bcBtn] && !gamepad[bcPrev]) ballCam = !ballCam;
+    if (bcBtn) {
+      var bcPrev = '_prev' + bcBtn.charAt(0).toUpperCase() + bcBtn.slice(1);
+      if (gamepad[bcBtn] && !gamepad[bcPrev]) ballCam = !ballCam;
+    }
     // Gamepad rumble power-up activation (D-pad Up)
     if (gamepad.dpadUp && !gamepad._prevDpadUp && rumbleActive && playerPowerup && gameState === 'playing') {
       activateRumblePowerup('player');
@@ -5314,25 +5311,11 @@ function updatePlayer(dt) {
     } else {
       pV.copy(surfV);
     }
-    // RL-style: magnetic stick to surface, but ceiling has reduced grip
-    // Ceiling: apply gentle downward gravity to prevent infinite ceiling camping
-    if (pSurface === 'ceiling') {
-      // Gravity pulls car off ceiling — need speed to stay attached
-      var ceilingGravForce = Math.abs(GRAV_ACTIVE) * 0.15; // 15% of normal gravity
-      pV.y -= ceilingGravForce * dt;
-      // If car drifts away from ceiling, detach
-      if (pP.y < WH - CH / 2 - 1.5) {
-        pSurface = 'air';
-        pGround = false;
-        pWallGraceTimer = 0;
-        pCanDodge = true;
-        pDodgeTimer = 999;
-      }
-    }
+    // RL-style: magnetic stick to surface — WALL_DETACH_GRACE handles ceiling exit like all walls
     // Wall detach: if speed too low, start grace timer
     if (Math.abs(pSpeed) < WALL_MIN_SPEED) {
       pWallGraceTimer += dt;
-      var graceTime = pSurface === 'ceiling' ? WALL_DETACH_GRACE * 0.5 : WALL_DETACH_GRACE;
+      var graceTime = WALL_DETACH_GRACE;
       if (pWallGraceTimer >= graceTime) {
         // Detach from surface — preserve flip (fell off without jumping)
         pSurface = 'air';
@@ -5387,40 +5370,66 @@ function updatePlayer(dt) {
     }
   }
 
-  // RL-style aerial mechanics — boost in air gives thrust in car's pitched direction
+  // RL-accurate aerial mechanics: angular velocity model with proper pitch/yaw/roll
   if (!pOnSurface) {
-    // Air steering (slower than ground)
-    var airTurnRate = CAR_TURN * 0.6;
-    // Air roll — holding powerslide key lets you rotate freely in air (like RL air roll)
-    if (isControl('powerslide')) {
-      // Air roll: left/right rotates the car body
-      if (isControl('left')) pRot += airTurnRate * 1.2 * dt;
-      if (isControl('right')) pRot -= airTurnRate * 1.2 * dt;
-    }
-    // Dedicated air roll bindings (RL-style: roll directly without needing direction input)
-    if (isControl('airRollLeft')) pRot += airTurnRate * 1.2 * dt;
-    if (isControl('airRollRight')) pRot -= airTurnRate * 1.2 * dt;
+    var psHeld = isControl('powerslide');
+    // Pitch: forward = nose up, backward = nose down
+    var pitchInput = (isControl('forward') ? 1 : 0) - (isControl('backward') ? 1 : 0);
+    // Cache left/right to avoid calling isControl twice
+    var lrInput = (isControl('left') ? 1 : 0) - (isControl('right') ? 1 : 0);
+    // Yaw: left/right when NOT air-rolling (powerslide remaps left/right to roll)
+    var yawInput = psHeld ? 0 : lrInput;
+    // Roll: airRollLeft/Right always roll; powerslide+left/right also roll; clamp to ±1 to prevent stacking
+    var rollInput = Math.max(-1, Math.min(1,
+      (isControl('airRollLeft') ? 1 : 0) - (isControl('airRollRight') ? 1 : 0)
+      + (psHeld ? lrInput : 0)
+    ));
 
-    // Nose pitch control — forward/back tilts nose up/down
-    if (isControl('forward')) pPitch = Math.min((pPitch || 0) + 5.0 * dt, Math.PI / 2);
-    else if (isControl('backward')) pPitch = Math.max((pPitch || 0) - 5.0 * dt, -Math.PI / 2);
-    else pPitch = (pPitch || 0) * Math.pow(0.92, dt * 60); // slowly return to neutral (frame-rate independent)
+    // Single damping value shared by pitch and yaw (RL: damping off at full input)
+    var damp = AIR_DAMP * dt;
+    // Pitch angular velocity
+    if (pitchInput !== 0) {
+      pAngVelPitch += AIR_PITCH_ACC * pitchInput * dt;
+    } else {
+      pAngVelPitch = Math.abs(pAngVelPitch) <= damp ? 0 : pAngVelPitch - Math.sign(pAngVelPitch) * damp;
+    }
+    // Yaw angular velocity
+    if (yawInput !== 0) {
+      pAngVelYaw += AIR_YAW_ACC * yawInput * dt;
+    } else {
+      pAngVelYaw = Math.abs(pAngVelYaw) <= damp ? 0 : pAngVelYaw - Math.sign(pAngVelYaw) * damp;
+    }
+    // Roll angular velocity — always damped even with input (RL behaviour)
+    if (rollInput !== 0) {
+      pAngVelRoll += AIR_ROLL_ACC * rollInput * dt;
+    }
+    var rd = AIR_ROLL_DAMP * dt;
+    pAngVelRoll = Math.abs(pAngVelRoll) <= rd ? 0 : pAngVelRoll - Math.sign(pAngVelRoll) * rd;
+
+    // Clamp to max angular velocity
+    pAngVelPitch = Math.max(-AIR_ANG_MAX, Math.min(AIR_ANG_MAX, pAngVelPitch));
+    pAngVelYaw   = Math.max(-AIR_ANG_MAX, Math.min(AIR_ANG_MAX, pAngVelYaw));
+    pAngVelRoll  = Math.max(-AIR_ANG_MAX, Math.min(AIR_ANG_MAX, pAngVelRoll));
+
+    // Apply to orientation angles
+    pPitch += pAngVelPitch * dt;
+    pRot   += pAngVelYaw * dt;   // left = +pRot (matches ground steering convention)
+    pRoll  += pAngVelRoll * dt;
 
     if (boosting) {
-      // Aerial boost thrust — direction based on car facing + pitch (RL-style: boost in facing direction)
-      var aerialForce = CAR_ACCEL * 1.5;
-      var pitchAngle = pPitch || 0;
-      pV.x += Math.sin(pRot) * Math.cos(pitchAngle) * aerialForce * dt;
-      pV.z += Math.cos(pRot) * Math.cos(pitchAngle) * aerialForce * dt;
-      pV.y += (Math.sin(pitchAngle) * aerialForce + 4) * dt; // pitch up = fly up
+      // Boost thrust along nose direction: yaw + pitch, no artificial +Y gravity compensation
+      var afd = CAR_ACCEL * 1.5 * dt; // aerial force × dt, computed once
+      var cosPitch = Math.cos(pPitch);
+      pV.x += Math.sin(pRot) * cosPitch * afd;
+      pV.z += Math.cos(pRot) * cosPitch * afd;
+      pV.y += Math.sin(pPitch) * afd;
       // Clamp aerial speed
       var aerialSpd = pV.length();
-      if (aerialSpd > CAR_BOOST_MAX * CAR_SPEED_MULT * 1.2) {
-        pV.multiplyScalar(CAR_BOOST_MAX * CAR_SPEED_MULT * 1.2 / aerialSpd);
-      }
+      var maxAerial = CAR_BOOST_MAX * CAR_SPEED_MULT * 1.2;
+      if (aerialSpd > maxAerial) pV.multiplyScalar(maxAerial / aerialSpd);
     }
   } else {
-    pPitch = 0; // reset pitch on ground
+    resetAerialState(); // zero angles + angular velocities on landing
   }
 
   // Jump / Dodge (1.25s flip window like Rocket League)
@@ -5437,8 +5446,9 @@ function updatePlayer(dt) {
         jumpNormal = getSurfaceAxes(pSurface).normal;
       }
       pV.addScaledVector(jumpNormal, JUMP_V);
-      // Wall/ceiling jumps: ensure upward lift so floor check doesn't recapture
-      if (pSurface !== 'floor') {
+      // Wall jumps: ensure upward lift so floor check doesn't recapture
+      // Ceiling excluded: its jump normal is (0,-1,0), so pV.y is already negative (downward)
+      if (pSurface !== 'floor' && pSurface !== 'ceiling') {
         pV.y = Math.max(pV.y, JUMP_V * 0.5);
       }
       pGround = false;
@@ -5543,22 +5553,24 @@ function updatePlayer(dt) {
     // Also check curved ramp surfaces — car is grounded if touching the ramp
     var carCurve = getCurveInfo(pP.x, pP.y, pP.z, 0);
     var onRamp = false;
-    if (!onFloor && carCurve && carCurve.onCurve && carCurve.dist < carCurve.radius + CH / 2 + 1.5) {
-      // On curved ramp — treat as grounded, push fully out along curve normal
+    if (!onFloor && carCurve && carCurve.onCurve && carCurve.dist < carCurve.radius + CH / 2 + 1.5
+        && carCurve.center.y < WH / 2) { // ceiling curves (center.y≈19) never ground the car
+      // On curved ramp — push to guaranteed clearance distance
       var rampPen = carCurve.radius + CH / 2 - carCurve.dist;
-      if (rampPen > -0.5) {
-        // Push out even if slightly outside (catches cars sliding under)
-        var pushAmt = Math.max(rampPen + 0.1, 0.05);
-        pP.addScaledVector(carCurve.normal, pushAmt);
+      if (rampPen > -1.0) {
+        var targetDist = carCurve.radius + CH / 2 + 0.15;
+        var pushAmt = targetDist - carCurve.dist;
+        if (pushAmt > 0) pP.addScaledVector(carCurve.normal, pushAmt);
       }
       var rampDot = pV.dot(carCurve.normal);
-      if (rampDot < 0) pV.addScaledVector(carCurve.normal, -rampDot);
+      if (rampDot < 0) pV.addScaledVector(carCurve.normal, -rampDot * 1.05);
       onRamp = true;
     }
     if (onFloor || onRamp) {
       if (onFloor) pP.y = CH / 2;
       if (wasAirborne && pV.y < -5) {
         vibrateController(80, 0.3, 0.2); // light pulse on landing
+        playLandingSound(Math.abs(pV.y));
         for (var li = 0; li < 6; li++) {
           spawnParticle(
             pP.x + (Math.random() - 0.5) * CW,
@@ -5574,8 +5586,10 @@ function updatePlayer(dt) {
       pGround = true;
 
       // Ramp-to-wall transition: when curve normal becomes more horizontal than vertical,
-      // the car has driven past 45° on the ramp — transition to wall surface
-      if (onRamp && carCurve && Math.abs(pSpeed) >= WALL_MIN_SPEED) {
+      // the car has driven past 45° on the ramp — transition to wall surface.
+      // Guard: pP.y >= CURVE_R*0.7 prevents immediate re-attachment after wall→floor
+      // transition (hysteresis: wall→floor at py≈2.5, floor→wall blocked until py≥3.5).
+      if (onRamp && carCurve && Math.abs(pSpeed) >= WALL_MIN_SPEED && pP.y >= CURVE_R * 0.7) {
         var rn = carCurve.normal;
         var absNX = Math.abs(rn.x), absNY = Math.abs(rn.y), absNZ = Math.abs(rn.z);
         if (absNX > absNY * 1.1 || absNZ > absNY * 1.1) {
@@ -5630,49 +5644,62 @@ function updatePlayer(dt) {
     // On a wall or ceiling — check curves for smooth wall-to-floor transition
     var wallCurve = getCurveInfo(pP.x, pP.y, pP.z, 0);
     if (wallCurve && wallCurve.onCurve && wallCurve.dist < wallCurve.radius + CH / 2 + 1.5) {
-      // Push car onto curve surface — only if push stays inside arena
+      // Push car onto curve surface to guaranteed clearance — only if push stays inside arena
       var wallRampPen = wallCurve.radius + CH / 2 - wallCurve.dist;
-      if (wallRampPen > -0.5) {
-        var pushAmt2 = Math.max(wallRampPen + 0.1, 0.05);
-        var wNewX = pP.x + wallCurve.normal.x * pushAmt2;
-        var wNewY = pP.y + wallCurve.normal.y * pushAmt2;
-        var wNewZ = pP.z + wallCurve.normal.z * pushAmt2;
-        if (wNewX > -FW / 2 && wNewX < FW / 2 && wNewY > CH / 2 && wNewY < WH) {
-          pP.set(wNewX, wNewY, wNewZ);
+      if (wallRampPen > -1.0) {
+        var targetDist2 = wallCurve.radius + CH / 2 + 0.15;
+        var pushAmt2 = targetDist2 - wallCurve.dist;
+        if (pushAmt2 > 0) {
+          var wNewX = pP.x + wallCurve.normal.x * pushAmt2;
+          var wNewY = pP.y + wallCurve.normal.y * pushAmt2;
+          var wNewZ = pP.z + wallCurve.normal.z * pushAmt2;
+          if (wNewX > -FW / 2 && wNewX < FW / 2 && wNewY > CH / 2 && wNewY < WH) {
+            pP.set(wNewX, wNewY, wNewZ);
+          }
         }
       }
       var wallRampDot = pV.dot(wallCurve.normal);
-      if (wallRampDot < 0) pV.addScaledVector(wallCurve.normal, -wallRampDot);
+      if (wallRampDot < 0) pV.addScaledVector(wallCurve.normal, -wallRampDot * 1.05);
 
-      // Check if normal has become more vertical — transition to floor or ceiling
-      var wn = wallCurve.normal;
-      if (Math.abs(wn.y) > Math.abs(wn.x) * 1.1 && Math.abs(wn.y) > Math.abs(wn.z) * 1.1) {
+      // Wall→floor transition: wn.y < -0.5 fires at py≈2.5 when clamped to wall face.
+      // Ceiling arcs: excluded by center.y check; ceiling handled by clampCarOnSurface.
+      if (wallCurve.center.y < WH / 2 && wallCurve.normal.y < -0.5) {
         var oldSurf2 = pSurface;
-        var newSurf = wn.y > 0 ? 'floor' : 'ceiling';
-        pSurface = newSurf;
+        pSurface = 'floor';
         pGround = true;
-        pRot = recalcHeadingForSurface(oldSurf2, newSurf, pRot, pV);
-        if (newSurf === 'floor') {
-          pSpeed = Math.sqrt(pV.x * pV.x + pV.z * pV.z) * (pSpeed >= 0 ? 1 : -1);
-        } else {
-          pSpeed = pV.length() * (pSpeed >= 0 ? 1 : -1);
-        }
+        pRot = recalcHeadingForSurface(oldSurf2, 'floor', pRot, pV);
+        pSpeed = Math.sqrt(pV.x * pV.x + pV.z * pV.z) * (pSpeed >= 0 ? 1 : -1);
         pWallGraceTimer = 0;
-      }
-      // Ceiling curve: if speed is low and on ceiling side of curve, eject to air
-      if (pSurface === 'ceiling' && Math.abs(pSpeed) < WALL_MIN_SPEED * 2) {
-        var cnY = wallCurve.normal.y;
-        if (cnY > -0.3) { // normal pointing more outward than downward = getting stuck
-          pSurface = 'air';
-          pGround = false;
-          pCanDodge = true;
-          pDodgeTimer = 999;
-        }
+      // Wall→ceiling arc transition: fires mid-arc (wn.y > 0.5) so pV still has horizontal
+      // component from arc redirect — recalcHeadingForSurface hits fast path instead of fallback,
+      // preventing the abrupt 90° heading snap that occurred at the flat ceiling boundary.
+      // pV.y > 0 guards: ceiling→wall descent gives pV.y < 0 after arc redirect,
+      // preventing oscillation when the car descends back through the arc from the ceiling side.
+      } else if (pSurface !== 'ceiling' && wallCurve.center.y > WH / 2 && wallCurve.normal.y > 0.5 && pV.y > 0) {
+        var oldSurf3 = pSurface;
+        pSurface = 'ceiling';
+        pGround = true;
+        pRot = recalcHeadingForSurface(oldSurf3, 'ceiling', pRot, pV);
+        pSpeed = pV.length() * (pSpeed >= 0 ? 1 : -1);
+        pWallGraceTimer = 0;
       }
     }
 
     // Standard surface transitions and clamping
     var transition = clampCarOnSurface(pP, pV, pSurface);
+    // Ceiling→wall: car drives into the wall-ceiling arc from the ceiling side
+    // Primary check: arc zone + velocity direction (graceful arc transition)
+    // Backstop check: wall face position (prevents tunneling at low lateral speed)
+    if (pSurface === 'ceiling' && !transition) {
+      if      (pP.x <= -FW / 2 + CURVE_R && pV.x <= -WALL_MIN_SPEED) transition = 'wallXn';
+      else if (pP.x >= FW / 2 - CURVE_R  && pV.x >=  WALL_MIN_SPEED) transition = 'wallXp';
+      else if (pP.z >= FL / 2 - CURVE_R  && pV.z >=  WALL_MIN_SPEED) transition = 'wallZp';
+      else if (pP.z <= -FL / 2 + CURVE_R && pV.z <= -WALL_MIN_SPEED) transition = 'wallZn';
+      else if (pP.x <= -FW / 2 + CW / 2 + 0.5) transition = 'wallXn';
+      else if (pP.x >= FW / 2 - CW / 2 - 0.5)  transition = 'wallXp';
+      else if (pP.z >= FL / 2 - CL / 2 - 0.5)  transition = 'wallZp';
+      else if (pP.z <= -FL / 2 + CL / 2 + 0.5) transition = 'wallZn';
+    }
     if (transition) {
       var oldSurface = pSurface;
       if (transition === 'air') {
@@ -5704,10 +5731,11 @@ function updatePlayer(dt) {
     keys['_rUsed'] = true;
     pP.set(0, CH / 2, FL * 0.33);
     pV.set(0, 0, 0);
-    pSpeed = 0;
+    pSpeed = 0; resetAerialState();
     pRot = Math.PI;
     pSurface = 'floor';
     pGround = true;
+    _pSmoothNormal.set(0, 1, 0); _pOnCurve = false; _pSnapVisual = true;
   }
   if (!isControl('reset')) keys['_rUsed'] = false;
 
@@ -5718,19 +5746,32 @@ function updatePlayer(dt) {
 
   // Powerslide smoke particles
   if (pPowerslide && Math.abs(pSpeed) > 8 && Math.random() < 0.5) {
+    var _psNorm = getSurfaceAxes(pSurface === 'air' ? 'floor' : pSurface).normal;
     spawnParticle(
-      pP.x + (Math.random() - 0.5) * CW,
-      0.3,
-      pP.z + (Math.random() - 0.5) * CL,
+      pP.x + (Math.random() - 0.5) * CW + _psNorm.x * 0.3,
+      pP.y + _psNorm.y * 0.3,
+      pP.z + (Math.random() - 0.5) * CL + _psNorm.z * 0.3,
       (Math.random() - 0.5) * 4, Math.random() * 3 + 1, (Math.random() - 0.5) * 4,
       0x888888, 0.5 + Math.random() * 0.3, 0.3 + Math.random() * 0.4
     );
+    playPowerslideScreech();
   }
 
   // Supersonic trail
   updateSupersonic();
   if (pSupersonic && Math.random() < 0.7) {
     spawnSupersonicTrail(playerCar, pRot);
+  }
+
+  // Smooth surface normal — used by camera and visuals to avoid snapping/spinning on curves
+  var _visCurve = getCurveInfo(pP.x, pP.y, pP.z, 0);
+  if (_visCurve && _visCurve.dist < _visCurve.radius + CH / 2 + 2.0) {
+    _pOnCurve = true;
+    _pSmoothNormal.lerp(_v5.copy(_visCurve.normal).negate(), Math.min(8 * dt, 1.0)).normalize();
+  } else {
+    _pOnCurve = false;
+    var _surfN = getSurfaceAxes(pSurface === 'air' ? 'floor' : pSurface).normal;
+    _pSmoothNormal.lerp(_surfN, Math.min(6 * dt, 1.0)).normalize();
   }
 }
 
@@ -5768,6 +5809,51 @@ function updateAI(dt) {
 
   AI_STATE_TIMER -= dt;
   AI_DODGE_COOLDOWN -= dt;
+
+  // Process pending dodge timers (replaces setTimeout — respects slow-mo scaling)
+  if (_aKickoffDodgeT > 0) {
+    _aKickoffDodgeT -= dt;
+    if (_aKickoffDodgeT <= 0 && !aDemoed && !aGround && gameState === 'playing') {
+      aV.x += Math.sin(aRot) * DODGE_V * 1.4;
+      aV.z += Math.cos(aRot) * DODGE_V * 1.4;
+      aV.y = 0;
+      aSpeed = Math.sqrt(aV.x * aV.x + aV.z * aV.z);
+    }
+  }
+  if (_aClearFlipT > 0) {
+    _aClearFlipT -= dt;
+    if (_aClearFlipT <= 0 && !aDemoed && !aGround && gameState === 'playing') {
+      aV.x += Math.sin(aRot) * DODGE_V * 1.5;
+      aV.z += Math.cos(aRot) * DODGE_V * 1.5;
+      aV.y = 0;
+      aSpeed = Math.sqrt(aV.x * aV.x + aV.z * aV.z);
+    }
+  }
+  if (_aSpeedDodgeT > 0) {
+    _aSpeedDodgeT -= dt;
+    if (_aSpeedDodgeT <= 0 && !aDemoed && !aGround && gameState === 'playing') {
+      aV.x += _aSpeedDodgeX; aV.z += _aSpeedDodgeZ; aV.y = 0;
+      aSpeed = Math.sqrt(aV.x * aV.x + aV.z * aV.z);
+    }
+  }
+  if (_aDoubleJumpT > 0) {
+    _aDoubleJumpT -= dt;
+    if (_aDoubleJumpT <= 0 && !aDemoed && !aGround && gameState === 'playing') {
+      aV.y += JUMP_V * 0.75;
+    }
+  }
+  if (_aFlickT > 0) {
+    _aFlickT -= dt;
+    if (_aFlickT <= 0 && !aDemoed && !aGround && gameState === 'playing') {
+      var fToBX = bP.x - aP.x;
+      var fToBZ = bP.z - aP.z;
+      var fToBL = Math.sqrt(fToBX * fToBX + fToBZ * fToBZ) || 1;
+      aV.x += (fToBX / fToBL) * DODGE_V * 1.2;
+      aV.z += (fToBZ / fToBL) * DODGE_V * 1.2;
+      aV.y = DODGE_V * 0.3;
+      aSpeed = Math.sqrt(aV.x * aV.x + aV.z * aV.z);
+    }
+  }
 
   var distToBall = Math.sqrt((bP.x - aP.x) * (bP.x - aP.x) + (bP.z - aP.z) * (bP.z - aP.z));
   var dist3D = Math.sqrt((bP.x - aP.x) * (bP.x - aP.x) + (bP.y - aP.y) * (bP.y - aP.y) + (bP.z - aP.z) * (bP.z - aP.z));
@@ -6007,14 +6093,7 @@ function updateAI(dt) {
     aV.y = JUMP_V;
     aGround = false;
     AI_DODGE_COOLDOWN = 3;
-    setTimeout(function() {
-      if (!aDemoed && !aGround && gameState === 'playing') {
-        aV.x += Math.sin(aRot) * DODGE_V * 1.4;
-        aV.z += Math.cos(aRot) * DODGE_V * 1.4;
-        aV.y = 0;
-        aSpeed = Math.sqrt(aV.x * aV.x + aV.z * aV.z);
-      }
-    }, 120);
+    _aKickoffDodgeT = 0.12;
   }
 
   // AI close-range clear flip — when very close to ball in corner, flip into it
@@ -6024,14 +6103,7 @@ function updateAI(dt) {
     aV.y = JUMP_V;
     aGround = false;
     AI_DODGE_COOLDOWN = 2.0;
-    setTimeout(function() {
-      if (!aDemoed && !aGround && gameState === 'playing') {
-        aV.x += Math.sin(aRot) * DODGE_V * 1.5;
-        aV.z += Math.cos(aRot) * DODGE_V * 1.5;
-        aV.y = 0;
-        aSpeed = Math.sqrt(aV.x * aV.x + aV.z * aV.z);
-      }
-    }, 100);
+    _aClearFlipT = 0.10;
   }
 
   // AI flip dodge for speed
@@ -6042,19 +6114,14 @@ function updateAI(dt) {
     aV.y = JUMP_V;
     aGround = false;
     AI_DODGE_COOLDOWN = 2.5;
-    setTimeout(function() {
-      if (!aDemoed && !aGround && gameState === 'playing') {
-        var dodgeX = Math.sin(aRot) * DODGE_V * 1.3;
-        var dodgeZ = Math.cos(aRot) * DODGE_V * 1.3;
-        aV.x += dodgeX; aV.z += dodgeZ; aV.y = 0;
-        aSpeed = Math.sqrt(aV.x * aV.x + aV.z * aV.z);
-      }
-    }, 110 + Math.random() * 40);
+    _aSpeedDodgeX = Math.sin(aRot) * DODGE_V * 1.3;
+    _aSpeedDodgeZ = Math.cos(aRot) * DODGE_V * 1.3;
+    _aSpeedDodgeT = 0.11 + Math.random() * 0.04;
   }
 
   // Velocity — project along ramp tangent if on a curve
   var _aiRamp = aGround ? getCurveInfo(aP.x, aP.y, aP.z, 0) : null;
-  var _aiOnRamp = _aiRamp && _aiRamp.dist < _aiRamp.radius + CH / 2 + 2;
+  var _aiOnRamp = _aiRamp && _aiRamp.dist < _aiRamp.radius + CH / 2 + 2 && _aiRamp.center.y < WH / 2;
   if (_aiOnRamp) {
     var _arn = _aiRamp.normal;
     _v4.set(Math.sin(aRot), 0, Math.cos(aRot));
@@ -6086,11 +6153,7 @@ function updateAI(dt) {
       if (AI_REACT >= 1.0 && ballHeight > 5 && distToBall < 18) {
         aV.y = JUMP_V * 1.15;
         if (AI_REACT >= 1.4 && ballHeight > 8) {
-          setTimeout(function() {
-            if (!aDemoed && !aGround && gameState === 'playing') {
-              aV.y += JUMP_V * 0.75;
-            }
-          }, 140 + Math.random() * 30);
+          _aDoubleJumpT = 0.14 + Math.random() * 0.03;
         }
       }
     }
@@ -6101,17 +6164,7 @@ function updateAI(dt) {
       aGround = false;
       AI_DODGE_COOLDOWN = 2.0;
       // Dodge into ball after short delay
-      setTimeout(function() {
-        if (!aDemoed && !aGround && gameState === 'playing') {
-          var toBX = bP.x - aP.x;
-          var toBZ = bP.z - aP.z;
-          var toBL = Math.sqrt(toBX * toBX + toBZ * toBZ) || 1;
-          aV.x += (toBX / toBL) * DODGE_V * 1.2;
-          aV.z += (toBZ / toBL) * DODGE_V * 1.2;
-          aV.y = DODGE_V * 0.3;
-          aSpeed = Math.sqrt(aV.x * aV.x + aV.z * aV.z);
-        }
-      }, 100);
+      _aFlickT = 0.10;
     }
   } else {
     if (ballHeight > 4 && dist3D < 30 && aBoost > 5 && AI_REACT >= 0.8
@@ -6190,7 +6243,7 @@ function updateExtraAI(dt, pos, vel, rot, speed, onGnd, bst, goalZ, isOrange, ca
   speed *= Math.pow(CAR_FRIC, dt * 60);
 
   var _exRamp = onGnd ? getCurveInfo(pos.x, pos.y, pos.z, 0) : null;
-  var _exOnRamp = _exRamp && _exRamp.dist < _exRamp.radius + CH / 2 + 2;
+  var _exOnRamp = _exRamp && _exRamp.dist < _exRamp.radius + CH / 2 + 2 && _exRamp.center.y < WH / 2;
   if (_exOnRamp) {
     var _en = _exRamp.normal;
     _v4.set(Math.sin(rot), 0, Math.cos(rot));
@@ -6214,6 +6267,14 @@ function updateExtraAI(dt, pos, vel, rot, speed, onGnd, bst, goalZ, isOrange, ca
   pos.z += vel.z * dt;
 
   if (pos.y <= CH / 2) { pos.y = CH / 2; vel.y = 0; }
+
+  // Wall-tunneling safety: reflect velocity if car escapes arena bounds before clampCar
+  var _exHW = FW / 2, _exHL = FL / 2;
+  if (pos.x < -_exHW) { pos.x = -_exHW; if (vel.x < 0) vel.x = -vel.x; }
+  if (pos.x >  _exHW) { pos.x =  _exHW; if (vel.x > 0) vel.x = -vel.x; }
+  if (pos.z < -_exHL) { pos.z = -_exHL; if (vel.z < 0) vel.z = -vel.z; }
+  if (pos.z >  _exHL) { pos.z =  _exHL; if (vel.z > 0) vel.z = -vel.z; }
+
   clampCar(pos, vel);
 
   // Store back (since JS passes objects by ref, pos/vel are updated in place)
@@ -6825,8 +6886,8 @@ function dropshotFloorCheck() {
 function updateBall(dt) {
   if (gameState !== 'playing') {
     if (gameState === 'countdown') {
-      bP.set(0, BR_ACTIVE + 0.5, 0);
-      bV.set(0, 0, 0);
+      bP.set(0, BR_ACTIVE, 0);
+      if (activeGameMode !== 'heatseeker') bV.set(0, 0, 0); // heatseeker serve set in game loop, not wiped here
     }
     return;
   }
@@ -6891,11 +6952,18 @@ function updateBall(dt) {
         }
       }
     }
-    // Same for player's goal with very fast ball
+    // Same for player's goal with very fast ball (ball already past line at frame start)
     if (prevZ > goalLineP && nextZ > goalLineP + GD && Math.abs(bP.x) < GW / 2 && bP.y < GH) {
       bP.set(bP.x, bP.y, goalLineP + 1);
       bV.z = Math.abs(bV.z) * 0.5;
       onGoal('ai');
+      return;
+    }
+    // Same for AI's goal with very fast ball (ball already past line at frame start)
+    if (prevZ < goalLineA && nextZ < goalLineA - GD && Math.abs(bP.x) < GW / 2 && bP.y < GH) {
+      bP.set(bP.x, bP.y, goalLineA - 1);
+      bV.z = -Math.abs(bV.z) * 0.5;
+      onGoal('player');
       return;
     }
   }
@@ -6971,8 +7039,10 @@ function updateBall(dt) {
       if (fallTile.team === 'orange') onGoal('ai');
       else onGoal('player');
     } else {
-      // Ball fell through near center or off-grid — use Z position
-      if (bP.z > 0) onGoal('ai');
+      // Fallback: use last touch team to determine who caused the breach, then field position
+      if (lastTouchTeam === 'orange') onGoal('player');      // orange hit ball through their own floor
+      else if (lastTouchTeam === 'blue') onGoal('ai');       // blue hit ball through their own floor
+      else if (bP.z > 0) onGoal('ai');
       else onGoal('player');
     }
     return;
@@ -7204,15 +7274,18 @@ function clampCar(pos, vel) {
   // Side walls (flat section — above floor curve, below ceiling curve)
   if (pos.x < -FW / 2 + hw && !inCornerZoneZ && !inFloorCurveZone && !inCeilCurveZone) { pos.x = -FW / 2 + hw; if (vel.x < 0) vel.x = 0; }
   if (pos.x > FW / 2 - hw && !inCornerZoneZ && !inFloorCurveZone && !inCeilCurveZone) { pos.x = FW / 2 - hw; if (vel.x > 0) vel.x = 0; }
-  // End walls (allow into goal opening, unless hoops/dropshot mode — solid walls)
-  if (pos.z > FL / 2 - hl && !inCornerZoneX && !inFloorCurveZone && !inCeilCurveZone) {
+  // End walls (allow into goal opening, unless hoops/dropshot mode — solid walls).
+  // Bypass inFloorCurveZone guard when inside the goal mouth so the back wall
+  // still clamps at ground level (car was able to drive through otherwise).
+  var inGoalMouth = Math.abs(pos.x) < GW / 2 - hw && pos.y <= GH;
+  if (pos.z > FL / 2 - hl && !inCornerZoneX && (!inFloorCurveZone || inGoalMouth) && !inCeilCurveZone) {
     if (hoopsActive || dropshotActive || Math.abs(pos.x) >= GW / 2 - hw || pos.y > GH) {
       pos.z = FL / 2 - hl; if (vel.z > 0) vel.z = 0;
     } else if (pos.z > FL / 2 + GD - hl) {
       pos.z = FL / 2 + GD - hl; if (vel.z > 0) vel.z = 0;
     }
   }
-  if (pos.z < -FL / 2 + hl && !inCornerZoneX && !inFloorCurveZone && !inCeilCurveZone) {
+  if (pos.z < -FL / 2 + hl && !inCornerZoneX && (!inFloorCurveZone || inGoalMouth) && !inCeilCurveZone) {
     if (hoopsActive || dropshotActive || Math.abs(pos.x) >= GW / 2 - hw || pos.y > GH) {
       pos.z = -FL / 2 + hl; if (vel.z < 0) vel.z = 0;
     } else if (pos.z < -FL / 2 - GD + hl) {
@@ -7365,6 +7438,8 @@ function checkCarCarGeneric(pos1, vel1, spd1, pos2, vel2, spd2) {
 // BOOST PAD COLLECTION
 // ==========================================================================
 function updateBoostPads(dt) {
+  if (gameState !== 'playing') return; // don't tick or collect during goal/gameover/countdown
+  var _now = Date.now();
   boostPads.forEach(function(pad) {
     if (!pad.active) {
       pad.respawnT -= dt;
@@ -7376,7 +7451,7 @@ function updateBoostPads(dt) {
     }
 
     // Pulse animation — animate children materials
-    var pulse = 0.8 + Math.sin(Date.now() * 0.004) * 0.2;
+    var pulse = 0.8 + Math.sin(_now * 0.004) * 0.2;
     pad.mesh.children.forEach(function(child) {
       if (child.material && child.material.emissiveIntensity !== undefined) {
         child.material.emissiveIntensity = 0.4 + pulse * 0.4;
@@ -7385,7 +7460,7 @@ function updateBoostPads(dt) {
     // Float animation for big pad orbs
     if (pad.big) {
       pad.mesh.children.forEach(function(child) {
-        if (child.position.y > 1) child.position.y = 2.0 + Math.sin(Date.now() * 0.003) * 0.3;
+        if (child.position.y > 1) child.position.y = 2.0 + Math.sin(_now * 0.003) * 0.3;
       });
     }
 
@@ -7469,7 +7544,7 @@ function updateCamera(dt) {
   camFwd.addScaledVector(camAxes.tx, Math.sin(pRot));
   camFwd.addScaledVector(camAxes.tz, Math.cos(pRot));
   camFwd.normalize();
-  var camNorm = camAxes.normal;
+  var camNorm = _pOnCurve ? _pSmoothNormal : camAxes.normal;
 
   // Camera angle offset (tilt down by CAM_ANGLE degrees)
   var angleRad = CAM_ANGLE * Math.PI / 180;
@@ -7481,7 +7556,12 @@ function updateCamera(dt) {
     var toBall = _v1.copy(bP).sub(pP);
     // Project toBall onto surface plane (remove normal component), reuse _v5
     var projBehind = _v5.copy(toBall).addScaledVector(camNorm, -toBall.dot(camNorm)).normalize();
-    if (projBehind.length() < 0.01) projBehind.copy(camFwd);
+    if (projBehind.length() < 0.01) {
+      // Ball directly above car — use previous camera direction to avoid sudden jump
+      projBehind.copy(cameraPos).sub(pP);
+      var _pbl = projBehind.length();
+      if (_pbl > 0.01) { projBehind.divideScalar(_pbl); } else { projBehind.copy(camFwd); }
+    }
     idealPos = _v2.copy(pP).addScaledVector(projBehind, -CAM_DIST);
     idealPos.addScaledVector(camNorm, CAM_HEIGHT);
     idealPos.addScaledVector(projBehind, Math.sin(angleRad) * CAM_HEIGHT * 0.3);
@@ -7506,7 +7586,7 @@ function updateCamera(dt) {
     idealPos.addScaledVector(camNorm, CAM_HEIGHT - (gamepad.connected ? gamepad.rightStickY * 4 : 0));
     idealPos.addScaledVector(swivelFwd, Math.sin(angleRad) * CAM_HEIGHT * 0.3);
     idealTarget = _v3.copy(pP).addScaledVector(swivelFwd, 10);
-    idealTarget.addScaledVector(camNorm, angleRad * 2);
+    idealTarget.addScaledVector(camNorm, Math.sin(angleRad) * 2);
   }
 
   // Stiffness-based camera — lower stiffness = more lag/float, higher = tighter follow
@@ -7524,13 +7604,24 @@ function updateCamera(dt) {
   cameraPos.lerp(idealPos, lerpSpeed * dt);
   cameraTarget.lerp(idealTarget, (lerpSpeed + transBoost) * dt);
 
-  // Smoothly lerp camera up vector toward surface normal — faster on walls for snappier feel
-  var upLerp = (pSurface !== 'floor' && pSurface !== 'air') ? 6 : 4;
+  // Smoothly lerp camera up vector toward surface normal — slower on curves to avoid spinning
+  var upLerp = _pOnCurve ? 3 : ((pSurface !== 'floor' && pSurface !== 'air') ? 6 : 4);
   cameraUp.lerp(_v6.copy(camNorm), upLerp * dt).normalize();
 
   camera.position.copy(cameraPos);
   camera.up.copy(cameraUp);
   camera.lookAt(cameraTarget);
+}
+
+// Wheel spin — module-scope to avoid per-frame function allocation
+var _wheelRadius = 0.55;
+function spinWheels(carGroup, speed) {
+  if (carGroup && carGroup.userData && carGroup.userData.wheels) {
+    var spinRate = speed / _wheelRadius * _frameDt;
+    carGroup.userData.wheels.forEach(function(wg) {
+      wg.rotation.x += spinRate;
+    });
+  }
 }
 
 // ==========================================================================
@@ -7542,8 +7633,8 @@ function syncVisuals() {
   var bSpd2D = Math.sqrt(bV.x * bV.x + bV.z * bV.z);
   var bSpd = bV.length(); // 3D speed for glow/emissive
   if (bSpd2D > 0.5) {
-    ball.rotation.x += bV.z * 0.02;
-    ball.rotation.z -= bV.x * 0.02;
+    ball.rotation.x += bV.z * 0.02 * _frameDt * 60;
+    ball.rotation.z -= bV.x * 0.02 * _frameDt * 60;
   }
 
   playerCar.position.copy(pP);
@@ -7555,31 +7646,43 @@ function syncVisuals() {
   fwd.addScaledVector(axes.tx, Math.sin(pRot));
   fwd.addScaledVector(axes.tz, Math.cos(pRot));
   fwd.normalize();
-  // Up direction = surface normal
-  var up = _v5.copy(axes.normal);
-  // Right = up cross forward (right-handed)
-  var right = _v6.crossVectors(up, fwd).normalize();
+  // Up direction = surface normal (use smooth normal on curves to prevent snapping)
+  var up = _pOnCurve ? _v5.copy(_pSmoothNormal) : _v5.copy(axes.normal);
+  // Right = up cross forward (right-handed); guard against parallel vectors (would produce zero/NaN)
+  var right = _v6.crossVectors(up, fwd);
+  if (right.lengthSq() < 0.0001) right.set(1, 0, 0);
+  else right.normalize();
   // Recompute up to ensure orthogonality
   up.crossVectors(fwd, right).normalize();
 
   _m1.makeBasis(right, up, fwd); // Car model faces +Z
   pTargetQuat.setFromRotationMatrix(_m1);
 
-  // Apply aerial pitch to target (not visual) so slerp blends smoothly
-  if (pSurface === 'air' && Math.abs(pPitch) > 0.05) {
-    _q1.setFromAxisAngle(_v4.set(1, 0, 0), -pPitch * 0.6);
-    pTargetQuat.multiply(_q1);
-    // Restore fwd for potential spin use below
-    fwd = _v4.set(0, 0, 0).addScaledVector(axes.tx, Math.sin(pRot)).addScaledVector(axes.tz, Math.cos(pRot)).normalize();
-    right = _v6.crossVectors(_v5.copy(axes.normal), fwd).normalize();
+  // Apply aerial pitch and roll to target quaternion using local axes
+  // Extract local axes from the target quaternion so rotation is always in car's frame
+  if (pSurface === 'air') {
+    if (Math.abs(pPitch) > 0.01) {
+      _v4.set(1, 0, 0).applyQuaternion(pTargetQuat); // local right in world space
+      _q1.setFromAxisAngle(_v4, -pPitch);
+      pTargetQuat.multiply(_q1);
+    }
+    if (Math.abs(pRoll) > 0.01) {
+      _v4.set(0, 0, 1).applyQuaternion(pTargetQuat); // local forward in world space
+      _q1.setFromAxisAngle(_v4, pRoll);
+      pTargetQuat.multiply(_q1);
+    }
   }
 
-  // Slerp visual quaternion for smooth transitions (4-frame blend)
-  pVisualQuat.slerp(pTargetQuat, 0.25);
+  // Slerp visual quaternion for smooth transitions; snap immediately on respawn.
+  // Frame-rate-independent: Math.min(18*dt,1) matches 0.25/frame at 60 fps.
+  if (_pSnapVisual) { pVisualQuat.copy(pTargetQuat); _pSnapVisual = false; }
+  else { pVisualQuat.slerp(pTargetQuat, Math.min(18 * _frameDt, 1.0)); }
 
   // Apply dodge spin as temporary overlay (not slerped — fast effect)
+  // Derive spin axis from the already-slerped visual quaternion to avoid axis mismatch
   if (pSpin > 0) {
-    _q2.setFromAxisAngle(right, Math.sin((1 - pSpin / 0.45) * Math.PI * 2) * Math.PI);
+    _v6.set(1, 0, 0).applyQuaternion(pVisualQuat); // visual right axis
+    _q2.setFromAxisAngle(_v6, Math.sin((1 - pSpin / 0.45) * Math.PI * 2) * Math.PI);
     pVisualQuat.multiply(_q2);
   }
 
@@ -7607,24 +7710,15 @@ function syncVisuals() {
   }
 
   // Wheel spin animation — rotate based on car speed
-  var wheelRadius = 0.55;
-  function spinWheels(carGroup, speed) {
-    if (carGroup && carGroup.userData && carGroup.userData.wheels) {
-      var spinRate = speed / wheelRadius * _frameDt;
-      carGroup.userData.wheels.forEach(function(wg) {
-        wg.rotation.x += spinRate;
-      });
-    }
-  }
   spinWheels(playerCar, pSpeed);
   spinWheels(aiCar, aSpeed);
-  if (aiCar2) spinWheels(aiCar2, a2Speed);
-  if (aiCar3) spinWheels(aiCar3, a3Speed);
+  if (aiCar2 && aiCar2.visible) spinWheels(aiCar2, a2Speed);
+  if (aiCar3 && aiCar3.visible) spinWheels(aiCar3, a3Speed);
   if (aiCar4 && aiCar4.visible) spinWheels(aiCar4, a4Speed);
   if (aiCar5 && aiCar5.visible) spinWheels(aiCar5, a5Speed);
 
   // Ball glow — RL-style: color based on last team touch, intensity based on speed
-  ballGlow.intensity = 0.5 + bSpd * 0.03;
+  ballGlow.intensity = Math.min(0.5 + bSpd * 0.03, 2.5);
   var ballBaseColor, ballEmissiveColor;
   // Heatseeker: ball turns purple at max speed, orange/yellow at medium
   if (activeGameMode === 'heatseeker' && heatseekerTarget !== 0) {
@@ -7693,7 +7787,8 @@ function syncVisuals() {
     ballIndicator.position.x = bP.x;
     ballIndicator.position.z = bP.z;
     var heightAboveGround = bP.y - BR_ACTIVE;
-    var indicatorOpacity = Math.min(0.25, heightAboveGround / 30);
+    var heightFade = Math.max(0, 1 - heightAboveGround / (WH * 0.5));
+    var indicatorOpacity = Math.min(0.25, heightAboveGround / 30) * heightFade;
     var indicatorScale = 1.0 + heightAboveGround * 0.03;
     ballIndicator.material.opacity = heightAboveGround > 0.5 ? indicatorOpacity : 0;
     ballIndicator.scale.setScalar(indicatorScale);
@@ -7705,40 +7800,34 @@ function syncVisuals() {
 // ==========================================================================
 function updateUI() {
   // Boost meter
-  var pct = Math.round(pBoost);
-  document.getElementById('boost-fill').style.setProperty('--pct', pct + '%');
-  document.getElementById('boost-text').textContent = pct;
+  var pct = Math.min(100, Math.round(pBoost));
+  _elBoostFill.style.setProperty('--pct', pct + '%');
+  _elBoostText.textContent = pct;
 
   // Ball cam indicator
-  var bcEl = document.getElementById('ballcam-indicator');
-  bcEl.className = ballCam ? 'active' : '';
+  _elBallcam.className = ballCam ? 'active' : '';
 
   // Powerslide indicator
-  var psEl = document.getElementById('powerslide-indicator');
-  psEl.className = pPowerslide ? 'active' : '';
+  _elPowerslide.className = pPowerslide ? 'active' : '';
 
   // Ball speed display (convert to "km/h" for feel)
   var bSpd = Math.round(bV.length() * 2.5);
-  var bsEl = document.getElementById('ball-speed');
-  bsEl.textContent = bSpd + ' km/h';
-  bsEl.className = bSpd > 150 ? 'super' : (bSpd > 80 ? 'fast' : '');
+  _elBallSpeed.textContent = bSpd + ' km/h';
+  _elBallSpeed.className = bSpd > 150 ? 'super' : (bSpd > 80 ? 'fast' : '');
 
   // Supersonic indicator
-  var ssEl = document.getElementById('supersonic');
-  ssEl.className = pSupersonic ? 'active' : '';
+  _elSupersonic.className = pSupersonic ? 'active' : '';
 
   // Speed lines overlay
-  var slEl = document.getElementById('speed-lines');
-  slEl.className = (pSupersonic || Math.abs(pSpeed) > CAR_MAX * CAR_SPEED_MULT * 0.8) ? 'active' : '';
+  _elSpeedLines.className = (pSupersonic || Math.abs(pSpeed) > CAR_BOOST_MAX * CAR_SPEED_MULT * 0.8) ? 'active' : '';
 
   // Last touch indicator
-  var ltEl = document.getElementById('last-touch');
   if (lastTouchTeam && lastTouchTimer > 0) {
-    ltEl.className = lastTouchTeam;
-    ltEl.textContent = lastTouchTeam === 'orange' ? 'LAST TOUCH: ORANGE' : 'LAST TOUCH: BLUE';
+    _elLastTouch.className = lastTouchTeam;
+    _elLastTouch.textContent = lastTouchTeam === 'orange' ? 'LAST TOUCH: ORANGE' : 'LAST TOUCH: BLUE';
   } else {
-    ltEl.className = '';
-    ltEl.textContent = '';
+    _elLastTouch.className = '';
+    _elLastTouch.textContent = '';
   }
 
   // Timer
@@ -7797,6 +7886,8 @@ function setupInput() {
     } else if (e.key === 'Escape' && (gameState === 'playing' || gameState === 'countdown' || gameState === 'goal' || gameState === 'overtime_announce')) {
       if (replayActive) { endReplay(); }
       gameState = 'menu';
+      keys = {}; // clear held keys to prevent ghost inputs on next session
+      _slowmoTimer = 0; _goalBloomTimer = 0; countdownT = 0; goalT = 0; overtimeAnnounceT = 0;
       closeQuickChat();
       document.getElementById('menu').style.display = 'flex';
       document.getElementById('hud').style.display = 'none';
@@ -7824,6 +7915,8 @@ function setupInput() {
   window.addEventListener('keyup', function(e) {
     keys[e.key.toLowerCase()] = false;
   });
+
+  window.addEventListener('blur', function() { keys = {}; });
 
   // Cancel rebinding when clicking outside a key/gamepad button
   document.addEventListener('click', function(e) {
@@ -7985,9 +8078,9 @@ function update() {
   _frameDt = dt;
 
   // Slow-motion effect (goal celebration)
+  var realDt = dt; // unscaled dt for timers that should not be affected by slow-mo
   if (_slowmoTimer > 0) {
-    var realDt = dt;
-    dt *= _slowmoScale + (1 - _slowmoScale) * (1 - _slowmoTimer / 0.8); // ease out of slow-mo
+    dt *= _slowmoScale + (1 - _slowmoScale) * (1 - _slowmoTimer / _slowmoDuration); // ease out of slow-mo
     _slowmoTimer -= realDt;
     if (_slowmoTimer < 0) _slowmoTimer = 0;
   }
@@ -8039,7 +8132,7 @@ function update() {
           showOverlay('OVERTIME!');
           gameState = 'overtime_announce';
           isOvertime = true;
-          goalT = 0;
+          overtimeAnnounceT = 0;
         } else {
           endGame();
         }
@@ -8052,8 +8145,8 @@ function update() {
   }
 
   if (gameState === 'overtime_announce') {
-    goalT += dt;
-    if (goalT > 2) {
+    overtimeAnnounceT += dt;
+    if (overtimeAnnounceT > 2) {
       hideOverlay();
       gameState = 'playing'; // Sudden death overtime
     }
@@ -8110,7 +8203,7 @@ function update() {
     }
 
     // Collisions
-    if (gameState === 'playing' || gameState === 'overtime_announce') {
+    if (gameState === 'playing') {
       // Track shots/saves: check ball direction after hit
       var prevBZ = bV.z;
       var pHit = checkCarBall(pP, pV, pRot, pSpeed);
@@ -8186,8 +8279,14 @@ function update() {
     // Ball trail
     updateBallTrail(dt);
 
-    // Demolitions
-    updateDemos(dt);
+    // Demolitions — use unscaled realDt so respawn timer is not affected by goal slow-mo
+    updateDemos(realDt);
+
+    // Bloom reset timer
+    if (_goalBloomTimer > 0) {
+      _goalBloomTimer -= realDt;
+      if (_goalBloomTimer <= 0 && bloomPass) bloomPass.strength = 0.4;
+    }
 
     // Screen shake
     updateScreenShake(dt);
