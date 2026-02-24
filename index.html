@@ -5682,6 +5682,24 @@ function updatePlayer(dt) {
         pRot = recalcHeadingForSurface(oldSurf3, 'ceiling', pRot, pV);
         pSpeed = pV.length() * (pSpeed >= 0 ? 1 : -1);
         pWallGraceTimer = 0;
+      // Ceiling→wall arc transition: symmetric to wall→ceiling above.
+      // Fires mid-arc when arc normal swings horizontal (strong X/Z component),
+      // while pV still has direction from arc redirect — hits recalcHeading fast path.
+      // pV.y < 0 confirms descending; direction check picks the correct wall.
+      } else if (pSurface === 'ceiling' && wallCurve.center.y > WH / 2 && pV.y < 0) {
+        var ceilTarget = null;
+        if      (wallCurve.normal.x >  0.5 && pV.x >  0) ceilTarget = 'wallXp';
+        else if (wallCurve.normal.x < -0.5 && pV.x <  0) ceilTarget = 'wallXn';
+        else if (wallCurve.normal.z >  0.5 && pV.z >  0) ceilTarget = 'wallZp';
+        else if (wallCurve.normal.z < -0.5 && pV.z <  0) ceilTarget = 'wallZn';
+        if (ceilTarget) {
+          var oldSurf4 = pSurface;
+          pSurface = ceilTarget;
+          pGround = true;
+          pRot = recalcHeadingForSurface(oldSurf4, ceilTarget, pRot, pV);
+          pSpeed = pV.length() * (pSpeed >= 0 ? 1 : -1);
+          pWallGraceTimer = 0;
+        }
       }
     }
 
