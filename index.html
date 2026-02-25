@@ -5683,15 +5683,16 @@ function updatePlayer(dt) {
         pSpeed = pV.length() * (pSpeed >= 0 ? 1 : -1);
         pWallGraceTimer = 0;
       // Ceiling→wall arc transition: symmetric to wall→ceiling above.
-      // Fires mid-arc when arc normal swings horizontal (strong X/Z component),
-      // while pV still has direction from arc redirect — hits recalcHeading fast path.
-      // pV.y < 0 confirms descending; direction check picks the correct wall.
-      } else if (pSurface === 'ceiling' && wallCurve.center.y > WH / 2 && pV.y < 0) {
+      // Threshold 0.6 (not 0.5): at normal.x=0.6 the car is at Y≈23.36, safely below the
+      // ceiling clamp boundary (23.55) — preventing clampCarOnSurface from snapping back.
+      // pV.y < 0 confirms arc redirect has set descent; direction check picks the correct wall.
+      } else if (pSurface === 'ceiling' && wallCurve.center.y > WH / 2 && pV.y < 0
+                 && (Math.abs(wallCurve.normal.x) > 0.6 || Math.abs(wallCurve.normal.z) > 0.6)) {
         var ceilTarget = null;
-        if      (wallCurve.normal.x >  0.5 && pV.x >  0) ceilTarget = 'wallXp';
-        else if (wallCurve.normal.x < -0.5 && pV.x <  0) ceilTarget = 'wallXn';
-        else if (wallCurve.normal.z >  0.5 && pV.z >  0) ceilTarget = 'wallZp';
-        else if (wallCurve.normal.z < -0.5 && pV.z <  0) ceilTarget = 'wallZn';
+        if      (wallCurve.normal.x >  0.6 && pV.x >  0) ceilTarget = 'wallXp';
+        else if (wallCurve.normal.x < -0.6 && pV.x <  0) ceilTarget = 'wallXn';
+        else if (wallCurve.normal.z >  0.6 && pV.z >  0) ceilTarget = 'wallZp';
+        else if (wallCurve.normal.z < -0.6 && pV.z <  0) ceilTarget = 'wallZn';
         if (ceilTarget) {
           var oldSurf4 = pSurface;
           pSurface = ceilTarget;
