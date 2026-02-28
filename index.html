@@ -4454,7 +4454,8 @@ var TUTORIAL_STEPS = [
       if (pBoost >= BOOST_MAX - 15) return 'Hold ' + tutKey('boost') + ' while driving to boost!';
       return 'Now collect a <span style="color:#ff8800">boost pad</span> to refill!';
     },
-    check: function() { return pBoost < BOOST_MAX - 15 && tutorialProgress.collectedPad; }
+    check: function() { return pBoost < BOOST_MAX - 15 && tutorialProgress.collectedPad; },
+    onEnter: function() { tutorialProgress.collectedPad = false; }
   },
   {
     title: 'JUMPING',
@@ -8200,6 +8201,7 @@ function setupInput() {
       saveGarageSlot(_activeGarageSlot);
       _activeGarageSlot = n;
       loadGarageSlot(n);
+      saveGarage(); // keep primary rocketArenaGarage key in sync with active slot
       [0, 1, 2].forEach(function(i) {
         var btn = document.getElementById('garage-slot-' + i);
         if (btn) btn.classList.toggle('active', i === n);
