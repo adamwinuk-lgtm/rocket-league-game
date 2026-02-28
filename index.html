@@ -1650,6 +1650,16 @@ function updateMenuControls() {
   mc.innerHTML = html;
 }
 
+// Generic toast helper (reuses #gamepad-toast element) — module scope so rebind functions can call it
+function showToast(msg) {
+  var toast = document.getElementById('gamepad-toast');
+  toast.textContent = msg;
+  toast.style.display = 'block';
+  toast.style.animation = 'none';
+  toast.offsetHeight;
+  toast.style.animation = 'toastFade 2.5s ease-out forwards';
+}
+
 function updateRangeDisplays() {
   document.getElementById('s-vol-val').textContent = document.getElementById('s-volume').value + '%';
   document.getElementById('s-fov-val').textContent = document.getElementById('s-fov').value;
@@ -1721,6 +1731,15 @@ var GARAGE_FINISHES = [
   { id: 'pearlescent', name: 'Pearlescent', metalness: 0.5, roughness: 0.3  }
 ];
 
+function validateGarage() {
+  if (!GARAGE_BODIES.find(function(b) { return b.id === garage.body; })) garage.body = GARAGE_BODIES[0].id;
+  if (!GARAGE_COLORS.includes(garage.color)) garage.color = GARAGE_COLORS[0];
+  if (!GARAGE_ACCENTS.includes(garage.accent)) garage.accent = GARAGE_ACCENTS[0];
+  if (!GARAGE_BOOSTS.find(function(b) { return b.id === garage.boost; })) garage.boost = GARAGE_BOOSTS[0].id;
+  if (!GARAGE_TOPPERS.find(function(t) { return t.id === garage.topper; })) garage.topper = GARAGE_TOPPERS[0].id;
+  if (!GARAGE_FINISHES.find(function(f) { return f.id === garage.finish; })) garage.finish = GARAGE_FINISHES[0].id;
+}
+
 function loadGarage() {
   try {
     var saved = JSON.parse(localStorage.getItem('rocketArenaGarage'));
@@ -1733,13 +1752,7 @@ function loadGarage() {
       if (saved.finish) garage.finish = saved.finish;
     }
   } catch(e) { console.warn('[RocketArena]', e); }
-  // Validate loaded values against allowed options to guard against corruption
-  if (!GARAGE_BODIES.find(function(b) { return b.id === garage.body; })) garage.body = GARAGE_BODIES[0].id;
-  if (!GARAGE_COLORS.includes(garage.color)) garage.color = GARAGE_COLORS[0];
-  if (!GARAGE_ACCENTS.includes(garage.accent)) garage.accent = GARAGE_ACCENTS[0];
-  if (!GARAGE_BOOSTS.find(function(b) { return b.id === garage.boost; })) garage.boost = GARAGE_BOOSTS[0].id;
-  if (!GARAGE_TOPPERS.find(function(t) { return t.id === garage.topper; })) garage.topper = GARAGE_TOPPERS[0].id;
-  if (!GARAGE_FINISHES.find(function(f) { return f.id === garage.finish; })) garage.finish = GARAGE_FINISHES[0].id;
+  validateGarage();
 }
 
 function saveGarage() {
@@ -1764,12 +1777,7 @@ function loadGarageSlot(n) {
       if (saved.finish) garage.finish = saved.finish;
     }
   } catch(e) { console.warn('[RocketArena]', e); }
-  if (!GARAGE_BODIES.find(function(b) { return b.id === garage.body; })) garage.body = GARAGE_BODIES[0].id;
-  if (!GARAGE_COLORS.includes(garage.color)) garage.color = GARAGE_COLORS[0];
-  if (!GARAGE_ACCENTS.includes(garage.accent)) garage.accent = GARAGE_ACCENTS[0];
-  if (!GARAGE_BOOSTS.find(function(b) { return b.id === garage.boost; })) garage.boost = GARAGE_BOOSTS[0].id;
-  if (!GARAGE_TOPPERS.find(function(t) { return t.id === garage.topper; })) garage.topper = GARAGE_TOPPERS[0].id;
-  if (!GARAGE_FINISHES.find(function(f) { return f.id === garage.finish; })) garage.finish = GARAGE_FINISHES[0].id;
+  validateGarage();
 }
 
 // Generic garage section builder — eliminates repeated forEach patterns
@@ -8297,16 +8305,6 @@ function setupInput() {
       showChatBubble(btn.getAttribute('data-msg'));
     });
   });
-
-  // Generic toast helper (reuses #gamepad-toast element)
-  function showToast(msg) {
-    var toast = document.getElementById('gamepad-toast');
-    toast.textContent = msg;
-    toast.style.display = 'block';
-    toast.style.animation = 'none';
-    toast.offsetHeight;
-    toast.style.animation = 'toastFade 2.5s ease-out forwards';
-  }
 
   // Camera preset dropdown
   document.getElementById('s-cam-preset').addEventListener('change', function() {
