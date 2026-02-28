@@ -1209,12 +1209,16 @@ function handleRebindKey(e) {
   settings.controls[_rebindingAction] = key;
   _rebindingEl.classList.remove('listening');
   _rebindingEl.textContent = keyDisplayName(key);
+  var _reboundAction = _rebindingAction;
   _rebindingAction = null;
   _rebindingEl = null;
+  saveSettings();
   updateMenuControls();
-  // Sync ball cam HUD indicator if that binding changed
-  var _bcEl = document.getElementById('ballcam-indicator');
-  if (_bcEl) _bcEl.textContent = 'BALL CAM [' + keyDisplayName(settings.controls.ballcam).toUpperCase() + ']';
+  // Sync ball cam HUD indicator only if that binding changed
+  if (_reboundAction === 'ballcam') {
+    var _bcEl = document.getElementById('ballcam-indicator');
+    if (_bcEl) _bcEl.textContent = 'BALL CAM [' + keyDisplayName(settings.controls.ballcam).toUpperCase() + ']';
+  }
   e.preventDefault();
   e.stopPropagation();
   return true;
@@ -1249,6 +1253,7 @@ function pollGamepadRebind() {
       _rebindingGpEl.textContent = gamepadButtonName(buttons[i]);
       _rebindingGpAction = null;
       _rebindingGpEl = null;
+      saveSettings();
       updateMenuControls();
       return;
     }
@@ -1521,20 +1526,24 @@ function pollGarageNav() {
     } else if (gamepad.leftStickY > 0.5) {
       var cur3 = items[_garageFocusIdx];
       var cg3 = cur3.closest('.garage-grid');
+      var found3 = false;
       for (var i = _garageFocusIdx + 1; i < items.length; i++) {
         if (items[i].closest('.garage-grid') !== cg3 || items[i].tagName === 'BUTTON') {
-          _garageFocusIdx = i; break;
+          _garageFocusIdx = i; found3 = true; break;
         }
       }
+      if (!found3) _garageFocusIdx = items.length - 1; // already at last section
       gamepad._garageStickMoved = true; moved = true;
     } else if (gamepad.leftStickY < -0.5) {
       var cur4 = items[_garageFocusIdx];
       var cg4 = cur4.closest('.garage-grid');
+      var found4 = false;
       for (var i = _garageFocusIdx - 1; i >= 0; i--) {
         if (items[i].closest('.garage-grid') !== cg4 || items[i].tagName === 'BUTTON') {
-          _garageFocusIdx = i; break;
+          _garageFocusIdx = i; found4 = true; break;
         }
       }
+      if (!found4) _garageFocusIdx = 0; // already at first section
       gamepad._garageStickMoved = true; moved = true;
     }
   }
@@ -1661,6 +1670,12 @@ function loadGarage() {
       if (saved.topper) garage.topper = saved.topper;
     }
   } catch(e) { console.warn('[RocketArena]', e); }
+  // Validate loaded values against allowed options to guard against corruption
+  if (!GARAGE_BODIES.find(function(b) { return b.id === garage.body; })) garage.body = GARAGE_BODIES[0].id;
+  if (!GARAGE_COLORS.includes(garage.color)) garage.color = GARAGE_COLORS[0];
+  if (!GARAGE_ACCENTS.includes(garage.accent)) garage.accent = GARAGE_ACCENTS[0];
+  if (!GARAGE_BOOSTS.find(function(b) { return b.id === garage.boost; })) garage.boost = GARAGE_BOOSTS[0].id;
+  if (!GARAGE_TOPPERS.find(function(t) { return t.id === garage.topper; })) garage.topper = GARAGE_TOPPERS[0].id;
 }
 
 function saveGarage() {
@@ -1692,17 +1707,17 @@ function buildGarageUI() {
     function(b) { garage.body = b.id; });
 
   buildSection('garage-colors', GARAGE_COLORS,
-    function(div, c) { div.innerHTML = '<div class="color-swatch" style="background:' + c + '"></div>'; },
+    function(div, c) { var s = document.createElement('div'); s.className = 'color-swatch'; s.style.background = c; div.appendChild(s); },
     function(c) { return c === garage.color; },
     function(c) { garage.color = c; settings.carColor = c; });
 
   buildSection('garage-accents', GARAGE_ACCENTS,
-    function(div, c) { div.innerHTML = '<div class="color-swatch" style="background:' + c + '"></div>'; },
+    function(div, c) { var s = document.createElement('div'); s.className = 'color-swatch'; s.style.background = c; div.appendChild(s); },
     function(c) { return c === garage.accent; },
     function(c) { garage.accent = c; });
 
   buildSection('garage-boosts', GARAGE_BOOSTS,
-    function(div, b) { div.innerHTML = '<div class="color-swatch" style="background:#' + b.color.toString(16).padStart(6, '0') + '"></div>'; },
+    function(div, b) { var s = document.createElement('div'); s.className = 'color-swatch'; s.style.background = '#' + b.color.toString(16).padStart(6, '0'); div.appendChild(s); },
     function(b) { return b.id === garage.boost; },
     function(b) { garage.boost = b.id; });
 
@@ -4311,7 +4326,7 @@ var TUTORIAL_STEPS = [
   {
     title: 'AERIALS',
     text: function() { return 'Jump, then hold ' + tutKey('forward') + ' to pitch nose up + ' + tutKey('boost') + ' to boost into the air!<br>This is how you fly in Rocket League.'; },
-    check: function() { return pP.y > 5; }
+    check: function() { return pSurface === 'air' && pP.y > 5 && pBoost < BOOST_MAX - 10; }
   },
   {
     title: 'POWERSLIDE',
@@ -4327,6 +4342,7 @@ var TUTORIAL_STEPS = [
 
 var _tutorialSavedAI = 0; // saved AI difficulty during tutorial
 var _tutorialSavedBoost = 1; // saved boost mode during tutorial
+var _tutorialAdvanceTimer = 0; // dt-based step advance delay (replaces setTimeout)
 function startTutorial() {
   recalcActiveValues();
   applySettings();
@@ -4360,6 +4376,8 @@ function startTutorial() {
   tutorialStep = 0;
   tutorialStepComplete = false;
   tutorialProgress = {};
+  _tutorialAdvanceTimer = 0;
+  ballCam = false; // ensure ball cam starts off so ball-cam step is meaningful
   gameState = 'playing';
   document.getElementById('menu').style.display = 'none';
   document.getElementById('settings').style.display = 'none';
@@ -4404,32 +4422,41 @@ function updateTutorial(dt) {
   // Track special progress
   if (isControl('left') || isControl('right')) tutorialProgress.turned = true;
   if (isControl('powerslide') && Math.abs(pSpeed) > 5) tutorialProgress.powerslid = true;
+  if (isControl('ballcam')) tutorialProgress.ballCamToggled = true; // keyboard ball cam tracking
 
   var step = TUTORIAL_STEPS[tutorialStep];
   if (!step) {
-    // Tutorial complete!
     endTutorial();
     return;
   }
 
-  if (!tutorialStepComplete && step.check()) {
-    tutorialStepComplete = true;
-    document.getElementById('tutorial-check').className = 'show';
-    // Advance after a short delay
-    setTimeout(function() {
+  // dt-based step advance delay — safe against tab throttling and endTutorial() race
+  if (tutorialStepComplete) {
+    _tutorialAdvanceTimer -= dt;
+    if (_tutorialAdvanceTimer <= 0) {
       tutorialStep++;
       tutorialStepComplete = false;
+      _tutorialAdvanceTimer = 0;
       if (tutorialStep >= TUTORIAL_STEPS.length) {
         endTutorial();
       } else {
         updateTutorialUI();
       }
-    }, 1200);
+    }
+    return;
+  }
+
+  if (step.check()) {
+    tutorialStepComplete = true;
+    _tutorialAdvanceTimer = 1.2; // 1.2 seconds, same as former setTimeout delay
+    document.getElementById('tutorial-check').className = 'show';
   }
 }
 
 function endTutorial() {
+  if (!tutorialActive) return; // guard against double-call
   tutorialActive = false;
+  _tutorialAdvanceTimer = 0;
   settings.ai = _tutorialSavedAI; // restore player's AI difficulty
   settings.boost = _tutorialSavedBoost; // restore player's boost mode
   recalcActiveValues();
@@ -5283,7 +5310,7 @@ function updatePlayer(dt) {
     var bcBtn = settings.gamepadControls.ballcam;
     if (bcBtn) {
       var bcPrev = '_prev' + bcBtn.charAt(0).toUpperCase() + bcBtn.slice(1);
-      if (gamepad[bcBtn] && !gamepad[bcPrev]) ballCam = !ballCam;
+      if (gamepad[bcBtn] && !gamepad[bcPrev]) { ballCam = !ballCam; if (tutorialActive) tutorialProgress.ballCamToggled = true; }
     }
     // Gamepad rumble power-up activation (D-pad Up)
     if (gamepad.dpadUp && !gamepad._prevDpadUp && rumbleActive && playerPowerup && gameState === 'playing') {
@@ -7993,6 +8020,7 @@ function setupInput() {
 
   // Settings UI
   document.getElementById('garageBtn').addEventListener('click', function() {
+    _garageFocusIdx = -1; // reset focus so it initialises cleanly on open
     buildGarageUI();
     document.getElementById('menu').style.display = 'none';
     document.getElementById('garage').style.display = 'flex';
@@ -8013,6 +8041,7 @@ function setupInput() {
   document.getElementById('settingsBackBtn').addEventListener('click', function() {
     cancelRebind();
     cancelGamepadRebind();
+    settingsToUI(); // discard unsaved slider changes — reload UI from last-saved state
     _settingsFocusIdx = -1;
     var old = document.querySelector('.settings-focus');
     if (old) old.classList.remove('settings-focus');
