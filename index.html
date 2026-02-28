@@ -5679,7 +5679,17 @@ function updatePlayer(dt) {
         var oldSurf3 = pSurface;
         pSurface = 'ceiling';
         pGround = true;
-        pRot = recalcHeadingForSurface(oldSurf3, 'ceiling', pRot, pV);
+        // Geometrically exact wall→ceiling heading:
+        // wall "up" (Y component) maps to "away from wall" (wall normal direction) on ceiling;
+        // wall lateral (XZ) components pass through unchanged.
+        // This is exact for all headings and all 4 walls — no dependency on arc-modified pV.
+        var _wa3 = getSurfaceAxes(oldSurf3);
+        var _sr3 = Math.sin(pRot), _cr3 = Math.cos(pRot);
+        var _fy3 = _sr3 * _wa3.tx.y + _cr3 * _wa3.tz.y;
+        pRot = Math.atan2(
+          _sr3 * _wa3.tx.x + _cr3 * _wa3.tz.x + _wa3.normal.x * _fy3,
+          -(_sr3 * _wa3.tx.z + _cr3 * _wa3.tz.z + _wa3.normal.z * _fy3)
+        );
         pSpeed = pV.length() * (pSpeed >= 0 ? 1 : -1);
         pWallGraceTimer = 0;
       // Ceiling→wall arc transition: symmetric to wall→ceiling above.
@@ -5709,7 +5719,7 @@ function updatePlayer(dt) {
     // Ceiling→wall: car drives into the wall-ceiling arc from the ceiling side
     // Primary check: arc zone + velocity direction (graceful arc transition)
     // Backstop check: wall face position (prevents tunneling at low lateral speed)
-    if (pSurface === 'ceiling' && !transition) {
+    if (pSurface === 'ceiling' && !transition && !(wallCurve && wallCurve.center.y > WH / 2)) {
       if      (pP.x <= -FW / 2 + CURVE_R && pV.x <= -WALL_MIN_SPEED) transition = 'wallXn';
       else if (pP.x >= FW / 2 - CURVE_R  && pV.x >=  WALL_MIN_SPEED) transition = 'wallXp';
       else if (pP.z >= FL / 2 - CURVE_R  && pV.z >=  WALL_MIN_SPEED) transition = 'wallZp';
