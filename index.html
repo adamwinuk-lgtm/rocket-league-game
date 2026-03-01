@@ -6708,13 +6708,13 @@ function activateRumblePowerup(who) {
       break;
 
     case 'spikes':
-      // Ball attaches to car for 3 seconds (timer-based, no setTimeout)
+      // Ball attaches to car for 5 seconds (RL uses ~10s but that's too dominant in 1v1; 5s allows reaching goal without free scoring)
       if (who === 'player') {
         playerSpikesAttached = true;
-        _spikesTimerP = 3.0;
+        _spikesTimerP = 5.0;
       } else {
         aiSpikesAttached = true;
-        _spikesTimerA = 3.0;
+        _spikesTimerA = 5.0;
       }
       break;
 
@@ -6759,8 +6759,15 @@ function updateRumbleHUD() {
   if (playerPowerup) {
     var names = { freeze: 'FREEZE', spikes: 'SPIKES', boot: 'BOOT', haymaker: 'HAYMAKER' };
     var activateHint = gamepad.connected ? '[E / D-pad Up]' : '[E]';
-    el.textContent = 'RUMBLE: ' + (names[playerPowerup] || '--') + ' ' + activateHint;
+    // Show active duration remaining for duration-based powerups
+    var durationStr = '';
+    if (playerSpikesAttached) durationStr = ' (' + Math.ceil(_spikesTimerP) + 's)';
+    else if (ballFrozen) durationStr = ' (' + Math.ceil(ballFreezeTimer) + 's)';
+    el.textContent = 'RUMBLE: ' + (names[playerPowerup] || '--') + durationStr + ' ' + activateHint;
     el.style.color = '#ffcc00';
+  } else if (playerPowerupTimer > 0) {
+    el.textContent = 'RUMBLE: ' + Math.ceil(playerPowerupTimer) + 's...';
+    el.style.color = '#888';
   } else {
     el.textContent = 'RUMBLE: recharging...';
     el.style.color = '#888';
