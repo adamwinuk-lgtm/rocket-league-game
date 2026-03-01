@@ -4238,11 +4238,14 @@ function triggerDemo(isPlayer) {
     pDemoed = true; pDemoTimer = 3.0;
     playerCar.visible = false;
     spawnDemoExplosion(pP.x, pP.y, pP.z, 0xff6600);
+    // Release spikes so ball isn't dragged by an invisible/frozen car
+    if (playerSpikesAttached) { playerSpikesAttached = false; _spikesTimerP = 0; }
   } else {
     aDemoed = true; aDemoTimer = 3.0;
     aiCar.visible = false;
     spawnDemoExplosion(aP.x, aP.y, aP.z, 0x0066ff);
     matchStats.pDemos++; // player demoed the AI
+    if (aiSpikesAttached) { aiSpikesAttached = false; _spikesTimerA = 0; }
   }
   playDemoSound();
   vibrateController(400, 1.0, 1.0); // strong pulse for demolition
@@ -4870,6 +4873,16 @@ function resetPositions() {
     a5P.set(0, CH / 2, -FL * 0.42);
     a5V.set(0, 0, 0); a5Rot = faceTowardBall(0, -FL * 0.42); a5Speed = 0; a5Ground = true; a5Boost = BOOST_MAX;
   }
+  // Clear active rumble powerup effects so spikes/freeze don't carry over into kickoff
+  if (rumbleActive) {
+    playerSpikesAttached = false;
+    aiSpikesAttached = false;
+    ballFrozen = false;
+    ballFreezeTimer = 0;
+    _spikesTimerP = 0;
+    _spikesTimerA = 0;
+  }
+
   syncVisuals();
 }
 
@@ -6780,9 +6793,9 @@ function updateRumble(dt) {
     }
   }
 
-  // Ball freeze timer
+  // Ball freeze timer — use unscaled _frameDt so slow-mo doesn't extend freeze duration
   if (ballFrozen) {
-    ballFreezeTimer -= dt;
+    ballFreezeTimer -= _frameDt;
     bV.set(0, 0, 0); // keep ball frozen (overrides gravity)
     if (ballFreezeTimer <= 0) {
       ballFrozen = false;
@@ -6790,15 +6803,34 @@ function updateRumble(dt) {
     }
   }
 
-  // AI uses power-up opportunistically
+  // AI uses power-up with type-aware strategy
   if (aiPowerup && gameState === 'playing') {
-    var distToBall = Math.sqrt(
-      (aP.x - bP.x) * (aP.x - bP.x) + (aP.z - bP.z) * (aP.z - bP.z)
-    );
-    // Use power-up when close to ball or ball is close to own goal
-    if (distToBall < 15 || (bP.z < -FL / 4 && bP.z > -FL / 2)) {
-      activateRumblePowerup('ai');
+    var _aDistToBall = Math.sqrt((aP.x - bP.x) * (aP.x - bP.x) + (aP.z - bP.z) * (aP.z - bP.z));
+    var _ballInAIGoalZone = bP.z < -FL / 4;  // ball threatening AI goal
+    var _ballInPlayerHalf = bP.z > 0;        // ball on player's side — good time to attack
+    var _useNow = false;
+    switch (aiPowerup) {
+      case 'haymaker':
+        // Offensive — use when ball is on player's half or near player goal
+        _useNow = _ballInPlayerHalf || _aDistToBall < 20;
+        break;
+      case 'freeze':
+        // Defensive — freeze ball when it threatens AI goal or AI is in position
+        _useNow = _ballInAIGoalZone || (_aDistToBall < 12 && !_ballInPlayerHalf);
+        break;
+      case 'spikes':
+        // Offensive — grab ball when close and in neutral/player half
+        _useNow = _aDistToBall < 10 && !_ballInAIGoalZone;
+        break;
+      case 'boot':
+        // Use boot when player car is close to AI goal (defensive) or AI is near player
+        var _pDistToAIGoal = Math.abs(pP.z + FL / 2);
+        _useNow = _pDistToAIGoal < 20 || _aDistToBall < 15;
+        break;
+      default:
+        _useNow = _aDistToBall < 15 || _ballInAIGoalZone;
     }
+    if (_useNow) activateRumblePowerup('ai');
   }
 
   // Spikes: ball sticks to car (timer-based, safe across game state changes)
@@ -6839,21 +6871,24 @@ function activateRumblePowerup(who) {
       break;
 
     case 'spikes':
-      // Ball attaches to car for 3 seconds (timer-based, no setTimeout)
+      // Ball attaches to car for 5 seconds (RL uses ~10s but that's too dominant in 1v1; 5s allows reaching goal without free scoring)
       if (who === 'player') {
         playerSpikesAttached = true;
-        _spikesTimerP = 3.0;
+        _spikesTimerP = 5.0;
       } else {
         aiSpikesAttached = true;
-        _spikesTimerA = 3.0;
+        _spikesTimerA = 5.0;
       }
       break;
 
     case 'boot':
-      // Kick enemy car into the air
-      enemyCar.v.y = 30;
-      enemyCar.v.x += (Math.random() - 0.5) * 20;
-      enemyCar.v.z += (Math.random() - 0.5) * 20;
+      // Kick enemy car into the air (skip if already demoed)
+      var _enemyDemoed = who === 'player' ? aDemoed : pDemoed;
+      if (!_enemyDemoed) {
+        enemyCar.v.y = 30;
+        enemyCar.v.x += (Math.random() - 0.5) * 20;
+        enemyCar.v.z += (Math.random() - 0.5) * 20;
+      }
       break;
 
     case 'haymaker':
@@ -6887,8 +6922,15 @@ function updateRumbleHUD() {
   if (playerPowerup) {
     var names = { freeze: 'FREEZE', spikes: 'SPIKES', boot: 'BOOT', haymaker: 'HAYMAKER' };
     var activateHint = gamepad.connected ? '[E / D-pad Up]' : '[E]';
-    el.textContent = 'RUMBLE: ' + (names[playerPowerup] || '--') + ' ' + activateHint;
+    // Show active duration remaining for duration-based powerups
+    var durationStr = '';
+    if (playerSpikesAttached) durationStr = ' (' + Math.ceil(_spikesTimerP) + 's)';
+    else if (ballFrozen) durationStr = ' (' + Math.ceil(ballFreezeTimer) + 's)';
+    el.textContent = 'RUMBLE: ' + (names[playerPowerup] || '--') + durationStr + ' ' + activateHint;
     el.style.color = '#ffcc00';
+  } else if (playerPowerupTimer > 0) {
+    el.textContent = 'RUMBLE: ' + Math.ceil(playerPowerupTimer) + 's...';
+    el.style.color = '#888';
   } else {
     el.textContent = 'RUMBLE: recharging...';
     el.style.color = '#888';
@@ -8049,6 +8091,9 @@ function updateUI() {
     _elLastTouch.className = '';
     _elLastTouch.textContent = '';
   }
+
+  // Rumble HUD — keep powerup display in sync every frame
+  if (rumbleActive) updateRumbleHUD();
 
   // Timer
   updateScoreboard();
