@@ -357,6 +357,9 @@ canvas { display: block; }
   overflow-y: auto; padding: 30px 20px; box-sizing: border-box;
 }
 .garage-section { margin-bottom: 14px; width: 100%; max-width: 500px; }
+.garage-slot-btn { background: rgba(255,255,255,0.08); color: #ccc; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; padding: 5px 14px; font-size: 12px; font-weight: 600; cursor: pointer; letter-spacing: 1px; transition: all 0.15s; }
+.garage-slot-btn:hover { border-color: rgba(255,136,0,0.5); color: #ff8800; }
+.garage-slot-btn.active { border-color: #ff8800; color: #ff8800; background: rgba(255,136,0,0.12); }
 .garage-label { color: #aaa; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 6px; }
 .garage-grid { display: flex; flex-wrap: wrap; gap: 8px; }
 .garage-item {
@@ -614,6 +617,11 @@ body.shake canvas { animation: screenShake 0.15s ease-out; }
 
 <div id="garage" style="display:none;">
   <h2 style="color:#ff8800;font-size:28px;letter-spacing:3px;margin-bottom:16px;">GARAGE</h2>
+  <div id="garage-slots" style="display:flex;gap:8px;margin-bottom:12px;">
+    <button class="garage-slot-btn active" id="garage-slot-0">Slot 1</button>
+    <button class="garage-slot-btn" id="garage-slot-1">Slot 2</button>
+    <button class="garage-slot-btn" id="garage-slot-2">Slot 3</button>
+  </div>
   <div class="garage-section">
     <div class="garage-label">CAR BODY</div>
     <div class="garage-grid" id="garage-bodies"></div>
@@ -621,10 +629,18 @@ body.shake canvas { animation: screenShake 0.15s ease-out; }
   <div class="garage-section">
     <div class="garage-label">PRIMARY COLOR</div>
     <div class="garage-grid" id="garage-colors"></div>
+    <div id="garage-color-custom" style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+      <input type="color" id="garage-hex-color" style="width:36px;height:28px;border:none;background:none;cursor:pointer;">
+      <input type="text" id="garage-hex-text" maxlength="7" placeholder="#rrggbb" style="width:80px;background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:4px;padding:4px 6px;font-size:12px;">
+    </div>
   </div>
   <div class="garage-section">
     <div class="garage-label">ACCENT COLOR</div>
     <div class="garage-grid" id="garage-accents"></div>
+    <div id="garage-accent-custom" style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+      <input type="color" id="garage-accent-hex-color" style="width:36px;height:28px;border:none;background:none;cursor:pointer;">
+      <input type="text" id="garage-accent-hex-text" maxlength="7" placeholder="#rrggbb" style="width:80px;background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:4px;padding:4px 6px;font-size:12px;">
+    </div>
   </div>
   <div class="garage-section">
     <div class="garage-label">BOOST TRAIL</div>
@@ -633,6 +649,10 @@ body.shake canvas { animation: screenShake 0.15s ease-out; }
   <div class="garage-section">
     <div class="garage-label">TOPPER</div>
     <div class="garage-grid" id="garage-toppers"></div>
+  </div>
+  <div class="garage-section">
+    <div class="garage-label">PAINT FINISH</div>
+    <div class="garage-grid" id="garage-finishes"></div>
   </div>
   <div style="margin-top:16px;">
     <button class="btn-save" id="garageBackBtn">BACK</button>
@@ -786,6 +806,10 @@ body.shake canvas { animation: screenShake 0.15s ease-out; }
       </select>
     </div>
 
+    <div class="setting-group">
+      <label style="display:flex;align-items:center;gap:8px;">Screen Shake <input type="checkbox" id="s-screenshake" checked></label>
+    </div>
+
     <div class="settings-section-title">Audio & Camera</div>
 
     <div class="setting-group">
@@ -826,6 +850,17 @@ body.shake canvas { animation: screenShake 0.15s ease-out; }
     <div class="setting-group">
       <label>Camera Transition <span class="range-val" id="s-camtransition-val">1.2</span></label>
       <input type="range" id="s-camtransition" min="0.5" max="2" step="0.1" value="1.2">
+    </div>
+
+    <div class="setting-group">
+      <label>Camera Preset</label>
+      <select id="s-cam-preset">
+        <option value="">Custom</option>
+        <option value="default">Default</option>
+        <option value="pro">Pro</option>
+        <option value="wide">Wide</option>
+        <option value="cinematic">Cinematic</option>
+      </select>
     </div>
 
   </div>
@@ -928,7 +963,7 @@ var settings = {
   ballSpeed: 1, gravity: 1, ballSize: 1, boost: 1,
   carSpeed: 1, bounce: 0.65, carColor: '#ff6600',
   volume: 80, fov: 110, camDist: 18, camHeight: 9, camAngle: -3, camStiffness: 0.5, camSwivel: 5, camTransition: 1.2,
-  deadzone: 0.12, steeringSensitivity: 1.0, vibration: true,
+  deadzone: 0.12, steeringSensitivity: 1.0, vibration: true, screenShake: true,
   controls: {
     forward: 'w', backward: 's', left: 'a', right: 'd',
     jump: ' ', boost: 'shift', ballcam: 'c', reset: 'r',
@@ -1084,6 +1119,7 @@ function settingsToUI() {
   document.getElementById('s-deadzone').value = settings.deadzone;
   document.getElementById('s-sensitivity').value = settings.steeringSensitivity;
   document.getElementById('s-vibration').checked = settings.vibration;
+  document.getElementById('s-screenshake').checked = settings.screenShake;
   var presetEl = document.getElementById('s-controller-preset');
   if (presetEl && gamepad.connected && gamepad.type !== 'generic') {
     presetEl.value = gamepad.type;
@@ -1117,6 +1153,7 @@ function uiToSettings() {
   settings.deadzone = parseFloat(document.getElementById('s-deadzone').value);
   settings.steeringSensitivity = parseFloat(document.getElementById('s-sensitivity').value);
   settings.vibration = document.getElementById('s-vibration').checked;
+  settings.screenShake = document.getElementById('s-screenshake').checked;
   // Controls are updated live via rebinding UI, no need to read from DOM
 }
 
@@ -1206,6 +1243,15 @@ function handleRebindKey(e) {
     return true;
   }
   if (key === 'f5' || key === 'f11' || key === 'f12') return true;
+  // Check for conflicts and clear previous binding
+  var _conflictAction = null;
+  for (var _ca in settings.controls) {
+    if (_ca !== _rebindingAction && settings.controls[_ca] === key) { _conflictAction = _ca; break; }
+  }
+  if (_conflictAction) {
+    settings.controls[_conflictAction] = '';
+    showToast(CONTROL_LABELS[_conflictAction] + ' unbound from ' + keyDisplayName(key));
+  }
   settings.controls[_rebindingAction] = key;
   _rebindingEl.classList.remove('listening');
   _rebindingEl.textContent = keyDisplayName(key);
@@ -1248,6 +1294,14 @@ function pollGamepadRebind() {
   var buttons = ['buttonA', 'buttonB', 'buttonX', 'buttonY', 'bumperL', 'bumperR'];
   for (var i = 0; i < buttons.length; i++) {
     if (gamepad[buttons[i]] && !gamepad['_prev' + buttons[i].charAt(0).toUpperCase() + buttons[i].slice(1)]) {
+      var _gpConflict = null;
+      for (var _gca in settings.gamepadControls) {
+        if (_gca !== _rebindingGpAction && settings.gamepadControls[_gca] === buttons[i]) { _gpConflict = _gca; break; }
+      }
+      if (_gpConflict) {
+        settings.gamepadControls[_gpConflict] = '';
+        showToast(CONTROL_LABELS[_gpConflict] + ' unbound from ' + gamepadButtonName(buttons[i]));
+      }
       settings.gamepadControls[_rebindingGpAction] = buttons[i];
       _rebindingGpEl.classList.remove('listening');
       _rebindingGpEl.textContent = gamepadButtonName(buttons[i]);
@@ -1596,6 +1650,16 @@ function updateMenuControls() {
   mc.innerHTML = html;
 }
 
+// Generic toast helper (reuses #gamepad-toast element) — module scope so rebind functions can call it
+function showToast(msg) {
+  var toast = document.getElementById('gamepad-toast');
+  toast.textContent = msg;
+  toast.style.display = 'block';
+  toast.style.animation = 'none';
+  toast.offsetHeight;
+  toast.style.animation = 'toastFade 2.5s ease-out forwards';
+}
+
 function updateRangeDisplays() {
   document.getElementById('s-vol-val').textContent = document.getElementById('s-volume').value + '%';
   document.getElementById('s-fov-val').textContent = document.getElementById('s-fov').value;
@@ -1617,7 +1681,8 @@ var garage = {
   color: '#ff6600',
   accent: '#ff8800',
   boost: 'standard',
-  topper: 'none'
+  topper: 'none',
+  finish: 'glossy'
 };
 
 var GARAGE_BODIES = [
@@ -1659,6 +1724,22 @@ var GARAGE_TOPPERS = [
   { id: 'mohawk', name: 'Mohawk', level: 8 }
 ];
 
+var GARAGE_FINISHES = [
+  { id: 'glossy',      name: 'Glossy',      metalness: 0.2, roughness: 0.05 },
+  { id: 'matte',       name: 'Matte',       metalness: 0.0, roughness: 0.9  },
+  { id: 'metallic',    name: 'Metallic',    metalness: 0.9, roughness: 0.1  },
+  { id: 'pearlescent', name: 'Pearlescent', metalness: 0.5, roughness: 0.3  }
+];
+
+function validateGarage() {
+  if (!GARAGE_BODIES.find(function(b) { return b.id === garage.body; })) garage.body = GARAGE_BODIES[0].id;
+  if (!GARAGE_COLORS.includes(garage.color)) garage.color = GARAGE_COLORS[0];
+  if (!GARAGE_ACCENTS.includes(garage.accent)) garage.accent = GARAGE_ACCENTS[0];
+  if (!GARAGE_BOOSTS.find(function(b) { return b.id === garage.boost; })) garage.boost = GARAGE_BOOSTS[0].id;
+  if (!GARAGE_TOPPERS.find(function(t) { return t.id === garage.topper; })) garage.topper = GARAGE_TOPPERS[0].id;
+  if (!GARAGE_FINISHES.find(function(f) { return f.id === garage.finish; })) garage.finish = GARAGE_FINISHES[0].id;
+}
+
 function loadGarage() {
   try {
     var saved = JSON.parse(localStorage.getItem('rocketArenaGarage'));
@@ -1668,18 +1749,35 @@ function loadGarage() {
       if (saved.accent) garage.accent = saved.accent;
       if (saved.boost) garage.boost = saved.boost;
       if (saved.topper) garage.topper = saved.topper;
+      if (saved.finish) garage.finish = saved.finish;
     }
   } catch(e) { console.warn('[RocketArena]', e); }
-  // Validate loaded values against allowed options to guard against corruption
-  if (!GARAGE_BODIES.find(function(b) { return b.id === garage.body; })) garage.body = GARAGE_BODIES[0].id;
-  if (!GARAGE_COLORS.includes(garage.color)) garage.color = GARAGE_COLORS[0];
-  if (!GARAGE_ACCENTS.includes(garage.accent)) garage.accent = GARAGE_ACCENTS[0];
-  if (!GARAGE_BOOSTS.find(function(b) { return b.id === garage.boost; })) garage.boost = GARAGE_BOOSTS[0].id;
-  if (!GARAGE_TOPPERS.find(function(t) { return t.id === garage.topper; })) garage.topper = GARAGE_TOPPERS[0].id;
+  validateGarage();
 }
 
 function saveGarage() {
   try { localStorage.setItem('rocketArenaGarage', JSON.stringify(garage)); } catch(e) { console.warn('[RocketArena]', e); }
+}
+
+var _activeGarageSlot = 0;
+
+function saveGarageSlot(n) {
+  try { localStorage.setItem('rocketArenaGarageSlot' + n, JSON.stringify(garage)); } catch(e) { console.warn('[RocketArena]', e); }
+}
+
+function loadGarageSlot(n) {
+  try {
+    var saved = JSON.parse(localStorage.getItem('rocketArenaGarageSlot' + n));
+    if (saved) {
+      if (saved.body) garage.body = saved.body;
+      if (saved.color) garage.color = saved.color;
+      if (saved.accent) garage.accent = saved.accent;
+      if (saved.boost) garage.boost = saved.boost;
+      if (saved.topper) garage.topper = saved.topper;
+      if (saved.finish) garage.finish = saved.finish;
+    }
+  } catch(e) { console.warn('[RocketArena]', e); }
+  validateGarage();
 }
 
 // Generic garage section builder — eliminates repeated forEach patterns
@@ -1717,14 +1815,34 @@ function buildGarageUI() {
     function(c) { garage.accent = c; });
 
   buildSection('garage-boosts', GARAGE_BOOSTS,
-    function(div, b) { var s = document.createElement('div'); s.className = 'color-swatch'; s.style.background = '#' + b.color.toString(16).padStart(6, '0'); div.appendChild(s); },
+    function(div, b) {
+      var s = document.createElement('div'); s.className = 'color-swatch'; s.style.background = '#' + b.color.toString(16).padStart(6, '0'); div.appendChild(s);
+      var lbl = document.createElement('span'); lbl.style.cssText = 'font-size:9px;color:#ccc;margin-top:2px;display:block;text-align:center;line-height:1.1;'; lbl.textContent = b.name; div.appendChild(lbl);
+    },
     function(b) { return b.id === garage.boost; },
     function(b) { garage.boost = b.id; });
 
   buildSection('garage-toppers', GARAGE_TOPPERS,
-    function(div, t) { div.textContent = t.name; },
+    function(div, t) {
+      var lbl = document.createElement('span'); lbl.style.cssText = 'font-size:10px;color:#ccc;text-align:center;'; lbl.textContent = t.name; div.appendChild(lbl);
+    },
     function(t) { return t.id === garage.topper; },
     function(t) { garage.topper = t.id; });
+
+  buildSection('garage-finishes', GARAGE_FINISHES,
+    function(div, f) { div.textContent = f.name; },
+    function(f) { return f.id === garage.finish; },
+    function(f) { garage.finish = f.id; });
+
+  // Sync hex color inputs
+  var hexCol = document.getElementById('garage-hex-color');
+  var hexTxt = document.getElementById('garage-hex-text');
+  if (hexCol) hexCol.value = garage.color;
+  if (hexTxt) hexTxt.value = garage.color;
+  var hexAcc = document.getElementById('garage-accent-hex-color');
+  var hexAccTxt = document.getElementById('garage-accent-hex-text');
+  if (hexAcc) hexAcc.value = garage.accent;
+  if (hexAccTxt) hexAccTxt.value = garage.accent;
 }
 
 var _currentPlayerBody = 'octane';
@@ -1743,14 +1861,19 @@ function applyGarage() {
     _currentPlayerBody = garage.body;
   }
 
-  // Apply colors
+  // Apply colors and finish
   var cc = new THREE.Color(garage.color);
   var ac = new THREE.Color(garage.accent);
+  var finishDef = GARAGE_FINISHES.find(function(f) { return f.id === garage.finish; }) || GARAGE_FINISHES[0];
   playerCar.traverse(function(child) {
     if (child.isMesh && child.material) {
       if (child.material.color) {
         if (child._isAccent) child.material.color.copy(ac);
-        else if (child._isBody) child.material.color.copy(cc);
+        else if (child._isBody) {
+          child.material.color.copy(cc);
+          child.material.metalness = finishDef.metalness;
+          child.material.roughness = finishDef.roughness;
+        }
       }
     }
   });
@@ -1828,6 +1951,13 @@ var BALL_SPEED_MULT = 1;
 var AI_MULT = 0.88;  // AI speed multiplier
 var AI_REACT = 1;     // AI reaction quality
 var CAM_DIST = 14;
+
+var CAM_PRESETS = [
+  { id: 'default',   name: 'Default',   fov: 110, camDist: 18, camHeight: 9,  camAngle: -3, camStiffness: 0.5, camSwivel: 5, camTransition: 1.2 },
+  { id: 'pro',       name: 'Pro',       fov: 110, camDist: 20, camHeight: 7,  camAngle: -4, camStiffness: 0.7, camSwivel: 4, camTransition: 1.0 },
+  { id: 'wide',      name: 'Wide',      fov: 120, camDist: 22, camHeight: 11, camAngle: -2, camStiffness: 0.4, camSwivel: 6, camTransition: 1.5 },
+  { id: 'cinematic', name: 'Cinematic', fov: 90,  camDist: 28, camHeight: 14, camAngle: -1, camStiffness: 0.2, camSwivel: 8, camTransition: 2.0 }
+];
 var CAM_HEIGHT = 7;
 var CAM_ANGLE = -3;
 var CAM_STIFFNESS = 0.5;
@@ -2805,6 +2935,12 @@ function init() {
   applySettings();
   applyGarage();
   updateMenuControls();
+
+  // Update tutorial button label if already completed
+  if (localStorage.getItem('tutorialDone')) {
+    var _tBtn = document.getElementById('tutorialBtn');
+    if (_tBtn) _tBtn.textContent = 'REPLAY TUTORIAL';
+  }
 
   window.addEventListener('resize', onResize);
 }
@@ -4214,6 +4350,7 @@ function playDemoSound() {
 // SCREEN SHAKE
 // ==========================================================================
 function triggerScreenShake(intensity) {
+  if (!settings.screenShake) return;
   _shakeIntensity = intensity;
   _shakeTimer = 0.15;
   document.body.classList.add('shake');
@@ -4296,17 +4433,29 @@ var TUTORIAL_STEPS = [
   {
     title: 'DRIVING',
     text: function() { return 'Use ' + tutKey('forward') + ' to drive forward and ' + tutKey('backward') + ' to reverse'; },
-    check: function() { return Math.abs(pSpeed) > 10; }
+    check: function() { return Math.abs(pSpeed) > 10; },
+    onEnter: function() { bP.set(0, BR_ACTIVE, -FL * 0.4); bV.set(0, 0, 0); }
   },
   {
     title: 'STEERING',
     text: function() { return 'Use ' + tutKey('left') + ' and ' + tutKey('right') + ' to steer left and right'; },
-    check: function() { return tutorialProgress.turned; }
+    check: function() { return tutorialProgress.turned && Math.abs(pSpeed) > 8; },
+    onEnter: function() { bP.set(0, BR_ACTIVE, -FL * 0.4); bV.set(0, 0, 0); }
+  },
+  {
+    title: 'HIT THE BALL',
+    text: function() { return 'Drive into the ball and make contact!'; },
+    check: function() { return lastTouchTeam === 'player'; },
+    onEnter: function() { resetPositions(); }
   },
   {
     title: 'BOOSTING',
-    text: function() { return 'Hold ' + tutKey('boost') + ' while driving to boost! Collect boost pads to refill.'; },
-    check: function() { return pBoost < BOOST_MAX - 15; }
+    text: function() {
+      if (pBoost >= BOOST_MAX - 15) return 'Hold ' + tutKey('boost') + ' while driving to boost!';
+      return 'Now collect a <span style="color:#ff8800">boost pad</span> to refill!';
+    },
+    check: function() { return pBoost < BOOST_MAX - 15 && tutorialProgress.collectedPad; },
+    onEnter: function() { tutorialProgress.collectedPad = false; }
   },
   {
     title: 'JUMPING',
@@ -4319,24 +4468,31 @@ var TUTORIAL_STEPS = [
     check: function() { return pSpin > 0; }
   },
   {
-    title: 'BALL CAM',
-    text: function() { return 'Press ' + tutKey('ballcam') + ' to toggle Ball Cam — keeps the camera locked on the ball.'; },
-    check: function() { return tutorialProgress.ballCamToggled; }
-  },
-  {
-    title: 'AERIALS',
-    text: function() { return 'Jump, then hold ' + tutKey('forward') + ' to pitch nose up + ' + tutKey('boost') + ' to boost into the air!<br>This is how you fly in Rocket League.'; },
-    check: function() { return pSurface === 'air' && pP.y > 5 && pBoost < BOOST_MAX - 10; }
-  },
-  {
     title: 'POWERSLIDE',
     text: function() { return 'Hold ' + tutKey('powerslide') + ' while turning to powerslide drift. In the air, ' + tutKey('powerslide') + ' + steer = air roll.'; },
     check: function() { return tutorialProgress.powerslid; }
   },
   {
+    title: 'AERIALS',
+    text: function() { return 'Jump, then hold ' + tutKey('forward') + ' to pitch nose up + ' + tutKey('boost') + ' to boost into the air!<br>This is how you fly in Rocket League.'; },
+    check: function() { return pSurface === 'air' && pP.y > 5 && pBoost < BOOST_MAX - 10; },
+    onEnter: function() { bP.set(0, BR_ACTIVE, -FL * 0.4); bV.set(0, 0, 0); }
+  },
+  {
+    title: 'BALL CAM',
+    text: function() { return 'Press ' + tutKey('ballcam') + ' to toggle Ball Cam — keeps the camera locked on the ball.'; },
+    check: function() { return tutorialProgress.ballCamToggled; }
+  },
+  {
+    title: 'RESET CAR',
+    text: function() { return 'Press ' + tutKey('reset') + ' to reset your car if you get stuck.'; },
+    check: function() { return tutorialProgress.resetUsed; }
+  },
+  {
     title: 'SCORE A GOAL',
     text: function() { return 'Now put it all together — hit the ball into the <span style="color:#00aaff">BLUE</span> goal!'; },
-    check: function() { return score[0] > 0; }
+    check: function() { return score[0] > 0; },
+    onEnter: function() { resetPositions(); }
   }
 ];
 
@@ -4378,6 +4534,7 @@ function startTutorial() {
   tutorialProgress = {};
   _tutorialAdvanceTimer = 0;
   ballCam = false; // ensure ball cam starts off so ball-cam step is meaningful
+  if (TUTORIAL_STEPS[0] && TUTORIAL_STEPS[0].onEnter) TUTORIAL_STEPS[0].onEnter();
   gameState = 'playing';
   document.getElementById('menu').style.display = 'none';
   document.getElementById('settings').style.display = 'none';
@@ -4423,6 +4580,7 @@ function updateTutorial(dt) {
   if (isControl('left') || isControl('right')) tutorialProgress.turned = true;
   if (isControl('powerslide') && Math.abs(pSpeed) > 5) tutorialProgress.powerslid = true;
   if (isControl('ballcam')) tutorialProgress.ballCamToggled = true; // keyboard ball cam tracking
+  if (isControl('reset')) tutorialProgress.resetUsed = true;
 
   var step = TUTORIAL_STEPS[tutorialStep];
   if (!step) {
@@ -4440,6 +4598,8 @@ function updateTutorial(dt) {
       if (tutorialStep >= TUTORIAL_STEPS.length) {
         endTutorial();
       } else {
+        var _nextStep = TUTORIAL_STEPS[tutorialStep];
+        if (_nextStep && _nextStep.onEnter) _nextStep.onEnter();
         updateTutorialUI();
       }
     }
@@ -4457,6 +4617,9 @@ function endTutorial() {
   if (!tutorialActive) return; // guard against double-call
   tutorialActive = false;
   _tutorialAdvanceTimer = 0;
+  try { localStorage.setItem('tutorialDone', '1'); } catch(e) {}
+  var _tBtn = document.getElementById('tutorialBtn');
+  if (_tBtn) _tBtn.textContent = 'REPLAY TUTORIAL';
   settings.ai = _tutorialSavedAI; // restore player's AI difficulty
   settings.boost = _tutorialSavedBoost; // restore player's boost mode
   recalcActiveValues();
@@ -7529,6 +7692,7 @@ function updateBoostPads(dt) {
       pad.mesh.visible = false;
       pad.respawnT = pad.cooldown;
       playBoostPickupSound(pad.big);
+      if (tutorialActive) tutorialProgress.collectedPad = true;
     }
 
     // Check AI collection
@@ -8031,6 +8195,48 @@ function setupInput() {
     document.getElementById('menu').style.display = 'flex';
   });
 
+  // Garage loadout slots
+  [0, 1, 2].forEach(function(n) {
+    document.getElementById('garage-slot-' + n).addEventListener('click', function() {
+      saveGarageSlot(_activeGarageSlot);
+      _activeGarageSlot = n;
+      loadGarageSlot(n);
+      saveGarage(); // keep primary rocketArenaGarage key in sync with active slot
+      [0, 1, 2].forEach(function(i) {
+        var btn = document.getElementById('garage-slot-' + i);
+        if (btn) btn.classList.toggle('active', i === n);
+      });
+      buildGarageUI();
+      applyGarage();
+    });
+  });
+
+  // Hex color inputs
+  document.getElementById('garage-hex-color').addEventListener('input', function() {
+    garage.color = this.value; settings.carColor = this.value;
+    document.getElementById('garage-hex-text').value = this.value;
+    saveGarage(); applyGarage(); buildGarageUI();
+  });
+  document.getElementById('garage-hex-text').addEventListener('change', function() {
+    var v = this.value.trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(v)) {
+      garage.color = v; settings.carColor = v;
+      saveGarage(); applyGarage(); buildGarageUI();
+    }
+  });
+  document.getElementById('garage-accent-hex-color').addEventListener('input', function() {
+    garage.accent = this.value;
+    document.getElementById('garage-accent-hex-text').value = this.value;
+    saveGarage(); applyGarage(); buildGarageUI();
+  });
+  document.getElementById('garage-accent-hex-text').addEventListener('change', function() {
+    var v = this.value.trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(v)) {
+      garage.accent = v;
+      saveGarage(); applyGarage(); buildGarageUI();
+    }
+  });
+
   document.getElementById('settingsBtn').addEventListener('click', function() {
     settingsToUI();
     _settingsFocusIdx = -1;
@@ -8102,26 +8308,32 @@ function setupInput() {
     });
   });
 
+  // Camera preset dropdown
+  document.getElementById('s-cam-preset').addEventListener('change', function() {
+    var preset = CAM_PRESETS.find(function(p) { return p.id === this.value; }.bind(this));
+    if (!preset) return;
+    settings.fov = preset.fov;
+    settings.camDist = preset.camDist;
+    settings.camHeight = preset.camHeight;
+    settings.camAngle = preset.camAngle;
+    settings.camStiffness = preset.camStiffness;
+    settings.camSwivel = preset.camSwivel;
+    settings.camTransition = preset.camTransition;
+    settingsToUI();
+    recalcActiveValues();
+    applySettings();
+  });
+
   // Gamepad connection/disconnection indicators
   window.addEventListener('gamepadconnected', function(e) {
     var type = detectControllerType(e.gamepad.id);
     gamepad.type = type;
     var presetEl = document.getElementById('s-controller-preset');
     if (presetEl && type !== 'generic') presetEl.value = type;
-    var toast = document.getElementById('gamepad-toast');
-    toast.textContent = controllerTypeName(type) + ' Connected';
-    toast.style.display = 'block';
-    toast.style.animation = 'none';
-    toast.offsetHeight;
-    toast.style.animation = 'toastFade 2.5s ease-out forwards';
+    showToast(controllerTypeName(type) + ' Connected');
   });
   window.addEventListener('gamepaddisconnected', function() {
-    var toast = document.getElementById('gamepad-toast');
-    toast.textContent = 'Controller Disconnected';
-    toast.style.display = 'block';
-    toast.style.animation = 'none';
-    toast.offsetHeight;
-    toast.style.animation = 'toastFade 2.5s ease-out forwards';
+    showToast('Controller Disconnected');
   });
 }
 
